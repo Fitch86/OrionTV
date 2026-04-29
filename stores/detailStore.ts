@@ -1,13 +1,13 @@
 import { create } from "zustand";
 import { SearchResult, api } from "@/services/api";
-import { getResolutionFromM3U8 } from "@/services/m3u8";
+import { getResolutionFromM3U8, probeVideoSource, SourceProbeResult } from "@/services/m3u8";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FavoriteManager } from "@/services/storage";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag('DetailStore');
 
-export type SearchResultWithResolution = SearchResult & { resolution?: string | null };
+export type SearchResultWithResolution = SearchResult & { resolution?: string | null; probeResult?: SourceProbeResult };
 
 interface DetailState {
   q: string | null;
@@ -64,28 +64,30 @@ const useDetailStore = create<DetailState>((set, get) => ({
 
     const { videoSource } = useSettingsStore.getState();
 
-    const processAndSetResults = async (results: SearchResult[], merge = false) => {
-      const resolutionStart = performance.now();
-      logger.info(`[PERF] Resolution detection START - processing ${results.length} sources`);
-      
-      const resultsWithResolution = await Promise.all(
-        results.map(async (searchResult) => {
-          let resolution;
-          const m3u8Start = performance.now();
-          try {
-            if (searchResult.episodes && searchResult.episodes.length > 0) {
-              resolution = await getResolutionFromM3U8(searchResult.episodes[0], signal);
-            }
-          } catch (e) {
-            if ((e as Error).name !== "AbortError") {
-              logger.info(`Failed to get resolution for ${searchResult.source_name}`, e);
-            }
-          }
-          const m3u8End = performance.now();
-          logger.info(`[PERF] M3U8 resolution for ${searchResult.source_name}: ${(m3u8End - m3u8Start).toFixed(2)}ms (${resolution || 'failed'})`);
-          return { ...searchResult, resolution };
-        })
-      );
+  const processAndSetResults = async (results: SearchResult[], merge = false) => {
+		const resolutionStart = performance.now();
+		logger.info(`[PERF] Resolution + probe detection START - processing ${results.length} sources`);
+
+		const resultsWithResolution = await Promise.all(
+			results.map(async (searchResult) => {
+				let resolution;
+				let probeResult;
+				const m3u8Start = performance.now();
+				try {
+					if (searchResult.episodes && searchResult.episodes.length > 0) {
+						probeResult = await probeVideoSource(searchResult.episodes[0], 5000);
+						resolution = probeResult.resolution || await getResolutionFromM3U8(searchResult.episodes[0], signal);
+					}
+				} catch (e) {
+					if ((e as Error).name !== "AbortError") {
+						logger.info(`Failed to probe/resolution for ${searchResult.source_name}`, e);
+					}
+				}
+				const m3u8End = performance.now();
+				logger.info(`[PERF] Probe for ${searchResult.source_name}: ${(m3u8End - m3u8Start).toFixed(2)}ms, accessible=${probeResult?.accessible}, ping=${probeResult?.pingMs}ms, resolution=${resolution || "failed"}`);
+				return { ...searchResult, resolution, probeResult };
+			})
+		);
       
       const resolutionEnd = performance.now();
       logger.info(`[PERF] Resolution detection COMPLETE - took ${(resolutionEnd - resolutionStart).toFixed(2)}ms`);
@@ -379,25 +381,32 @@ const useDetailStore = create<DetailState>((set, get) => ({
       return null;
     }
     
-    // 优先选择有高分辨率的source
-    const sortedSources = availableSources.sort((a, b) => {
-      const aResolution = a.resolution || '';
-      const bResolution = b.resolution || '';
-      
-      // 优先级: 1080p > 720p > 其他 > 无分辨率
-      const resolutionPriority = (res: string) => {
-        if (res.includes('1080')) return 4;
-        if (res.includes('720')) return 3;
-        if (res.includes('480')) return 2;
-        if (res.includes('360')) return 1;
-        return 0;
-      };
-      
-      return resolutionPriority(bResolution) - resolutionPriority(aResolution);
-    });
+ // 优先选择probe可访问+ping低的源，其次按分辨率排序
+ const sortedSources = availableSources.sort((a, b) => {
+ const aAccessible = a.probeResult?.accessible ? 1 : 0;
+ const bAccessible = b.probeResult?.accessible ? 1 : 0;
+ if (aAccessible !== bAccessible) return bAccessible - aAccessible;
+
+ if (aAccessible && bAccessible) {
+ const aPing = a.probeResult?.pingMs ?? 9999;
+ const bPing = b.probeResult?.pingMs ?? 9999;
+ if (Math.abs(aPing - bPing) > 500) return aPing - bPing;
+ }
+
+ const aResolution = a.resolution || '';
+ const bResolution = b.resolution || '';
+ const resolutionPriority = (res: string) => {
+ if (res.includes('1080')) return 4;
+ if (res.includes('720')) return 3;
+ if (res.includes('480')) return 2;
+ if (res.includes('360')) return 1;
+ return 0;
+ };
+ return resolutionPriority(bResolution) - resolutionPriority(aResolution);
+ });
     
     const selectedSource = sortedSources[0];
-    logger.info(`[SOURCE_SELECTION] Selected fallback source: ${selectedSource.source} (${selectedSource.source_name}) with resolution: ${selectedSource.resolution || 'unknown'}`);
+ logger.info(`[SOURCE_SELECTION] Selected fallback source: ${selectedSource.source} (${selectedSource.source_name}) resolution=${selectedSource.resolution || 'unknown'} accessible=${selectedSource.probeResult?.accessible ?? 'unknown'} ping=${selectedSource.probeResult?.pingMs ?? 'N/A'}ms`);
     
     return selectedSource;
   },

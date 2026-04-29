@@ -34,8 +34,8 @@
     "experiments": {
       "typedRoutes": true
     },
-    "name": "OrionTV",
-    "slug": "OrionTV",
+    "name": "LunaTV",
+    "slug": "LunaTV",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
@@ -43,7 +43,7 @@
       "**/*"
     ],
     "android": {
-      "package": "com.oriontv",
+      "package": "com.lunatv",
       "usesCleartextTraffic": true,
       "hardwareAcceleration": true,
       "networkSecurityConfig": "@xml/network_security_config",
@@ -59,7 +59,7 @@
           "action": "android.intent.action.VIEW",
           "data": [
             {
-              "scheme": "oriontv"
+              "scheme": "lunatv"
             }
           ],
           "category": [
@@ -70,7 +70,7 @@
       ]
     },
     "ios": {
-      "bundleIdentifier": "com.oriontv",
+      "bundleIdentifier": "com.lunatv",
       "supportsTablet": true,
       "requireFullScreen": false,
       "supportedInterfaceOrientations": [
@@ -83,7 +83,7 @@
         "usesNonExemptEncryption": false
       }
     },
-    "scheme": "oriontv",
+    "scheme": "lunatv",
     "extra": {
       "router": {
         "origin": false

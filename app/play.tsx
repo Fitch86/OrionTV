@@ -164,7 +164,12 @@ export default function PlayScreen() {
   useEffect(() => {
     const handleAppStateChange = (nextAppState: AppStateStatus) => {
       if (nextAppState === "background" || nextAppState === "inactive") {
-        videoRef.current?.pauseAsync();
+        videoRef.current?.pauseAsync()?.catch(() => {});
+      } else if (nextAppState === "active") {
+        const { status } = usePlayerStore.getState();
+        if (status?.isLoaded && !status.isPlaying) {
+          videoRef.current?.playAsync()?.catch(() => {});
+        }
       }
     };
 
@@ -197,9 +202,15 @@ export default function PlayScreen() {
       timeoutId = setTimeout(() => {
         if (usePlayerStore.getState().isLoading) {
           usePlayerStore.setState({ isLoading: false });
-          Toast.show({ type: "error", text1: "播放超时，请重试" });
+          Toast.show({ type: "error", text1: "播放超时，正在切换源...", text2: "请稍候" });
+          // 触发源切换而非仅提示
+          const { episodes, currentEpisodeIndex } = usePlayerStore.getState();
+          const currentUrl = episodes[currentEpisodeIndex]?.url;
+          if (currentUrl) {
+            usePlayerStore.getState().handleVideoError('stall', currentUrl);
+          }
         }
-      }, 60000); // 1 minute
+      }, 20000); // 20 seconds (playerStore的停滞检测15s会先触发)
     }
 
     return () => {
