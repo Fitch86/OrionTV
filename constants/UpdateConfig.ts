@@ -1,6 +1,6 @@
 export const UPDATE_CONFIG = {
-  // 自动检查更新
-  AUTO_CHECK: true,
+  // 禁用自动检查更新（LunaTV独立维护，不检查OrionTV上游）
+  AUTO_CHECK: false,
 
   // 检查更新间隔（毫秒）
   CHECK_INTERVAL: 12 * 60 * 60 * 1000, // 12小时
@@ -29,7 +29,7 @@ export const UPDATE_CONFIG = {
   // 更新通知设置
   NOTIFICATION: {
     ENABLED: true,
-    TITLE: "OrionTV 更新",
+    TITLE: "LunaTV 更新",
     DOWNLOADING_TEXT: "正在下载新版本...",
     DOWNLOAD_COMPLETE_TEXT: "下载完成，点击安装",
   },

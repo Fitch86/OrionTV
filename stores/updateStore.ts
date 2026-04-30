@@ -50,51 +50,33 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   showUpdateModal: false,
   isLatestVersion: false, // 新增：初始为false
 
-  // 检查更新
+  // 检查更新（LunaTV独立维护，暂时直接返回已是最新版本）
   checkForUpdate: async (silent = false) => {
     try {
-      set({ error: null, isLatestVersion: false });
+      set({ error: null, isLatestVersion: true });
 
-      // 获取跳过的版本
-      const skipVersion = await AsyncStorage.getItem(STORAGE_KEYS.SKIP_VERSION);
-      
-      const versionInfo = await updateService.checkVersion();
-      const isUpdateAvailable = updateService.isUpdateAvailable(versionInfo.version);
-      
-      // 如果有更新且不是要跳过的版本
-      const shouldShowUpdate = isUpdateAvailable && versionInfo.version !== skipVersion;
-
-      // 检查是否已经是最新版本
-      const isLatest = !isUpdateAvailable;
-
+      // LunaTV独立版本，不做远程更新检测，直接返回已是最新
       set({
-        remoteVersion: versionInfo.version,
-        downloadUrl: versionInfo.downloadUrl,
-        updateAvailable: isUpdateAvailable,
+        updateAvailable: false,
         lastCheckTime: Date.now(),
-        skipVersion,
-        showUpdateModal: shouldShowUpdate && !silent,
-        isLatestVersion: isLatest,
+        isLatestVersion: true,
       });
 
-      // 如果是手动检查且已是最新版本，显示提示
-      if (!silent && isLatest) {
+      if (!silent) {
         Toast.show({
           type: 'success',
           text1: '已是最新版本',
-          text2: `当前版本 v${updateService.getCurrentVersion()} 已是最新版本`,
+          text2: `当前版本 v${updateService.getCurrentVersion()}`,
           visibilityTime: 3000,
         });
       }
 
-      // 保存最后检查时间
       await AsyncStorage.setItem(
         STORAGE_KEYS.LAST_CHECK_TIME,
         Date.now().toString()
       );
     } catch (error) {
-      // console.info('检查更新失败:', error);
-      set({ 
+      set({
         error: error instanceof Error ? error.message : '检查更新失败',
         updateAvailable: false,
         isLatestVersion: false,
