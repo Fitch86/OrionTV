@@ -11,6 +11,7 @@ const logger = Logger.withTag('PlayerStore');
 // 缓冲停滞检测阈值
 const STALL_TIMEOUT = 15000; // 15s无进度视为停滞
 const MAX_RETRIES = 2; // 停滞后最大重试次数
+const CONSECUTIVE_ERROR_THRESHOLD = 3; // 连续API失败阈值，超过此数强制重建Video组件
 
 interface Episode {
   url: string;
@@ -19,6 +20,7 @@ interface Episode {
 
 interface PlayerState {
   videoRef: RefObject<Video> | null;
+  videoKey: number; // 用于强制Video组件重新挂载
   currentEpisodeIndex: number;
   episodes: Episode[];
   status: AVPlaybackStatus | null;
@@ -38,6 +40,7 @@ interface PlayerState {
   retryCount: number;
   stallTimer?: NodeJS.Timeout;
   lastPositionMillis: number;
+  consecutiveApiErrors: number; // 连续API调用失败计数
   setVideoRef: (ref: RefObject<Video>) => void;
   loadVideo: (options: {
     source: string;
@@ -67,10 +70,13 @@ interface PlayerState {
   _startStallDetection: () => void;
   _stopStallDetection: () => void;
   _handleStall: () => void;
+  _rebuildVideo: () => void; // 强制重建Video组件
+  _safeCall: (fn: () => Promise<void>, errorText: string) => Promise<void>; // 安全调用Video API
 }
 
 const usePlayerStore = create<PlayerState>((set, get) => ({
   videoRef: null,
+  videoKey: 0,
   episodes: [],
   currentEpisodeIndex: -1,
   status: null,
@@ -92,15 +98,54 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   retryCount: 0,
   stallTimer: undefined,
   lastPositionMillis: 0,
+  consecutiveApiErrors: 0,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
+
+  // 强制重建Video组件 - 通过改变key让React卸载旧组件并挂载新的
+  // 这是Android TV上ExoPlayer进入不可恢复状态后的唯一恢复方法
+  _rebuildVideo: () => {
+    const { videoKey, consecutiveApiErrors } = get();
+    logger.warn(`[REBUILD] Forcing Video component rebuild (key ${videoKey} -> ${videoKey + 1}), was ${consecutiveApiErrors} consecutive errors`);
+    set({
+      videoKey: videoKey + 1,
+      consecutiveApiErrors: 0,
+    });
+  },
+
+  // 安全调用Video API - 自动检测连续失败并触发重建
+  _safeCall: async (fn, errorText) => {
+    try {
+      await fn();
+      set({ consecutiveApiErrors: 0 }); // 成功调用，重置计数
+    } catch (error) {
+      const { consecutiveApiErrors, status } = get();
+      const newCount = consecutiveApiErrors + 1;
+      set({ consecutiveApiErrors: newCount });
+      logger.warn(`[SAFE_CALL] ${errorText} failed (${newCount}/${CONSECUTIVE_ERROR_THRESHOLD}):`, error?.toString()?.substring(0, 100));
+
+      // 如果status显示!isLoaded，说明原生播放器已经挂了
+      const isPlayerDead = status && !status.isLoaded;
+
+      if (newCount >= CONSECUTIVE_ERROR_THRESHOLD || isPlayerDead) {
+        logger.error(`[SAFE_CALL] Player appears dead (errors=${newCount}, isLoaded=${status?.isLoaded}), forcing rebuild`);
+        get()._rebuildVideo();
+        Toast.show({
+          type: "info",
+          text1: "正在恢复播放器...",
+          text2: "请稍候"
+        });
+      } else {
+        Toast.show({ type: "error", text1: errorText });
+      }
+    }
+  },
 
   _startStallDetection: () => {
     get()._stopStallDetection();
     const { lastPositionMillis, status } = get();
     const timer = setTimeout(() => {
       const currentState = get();
-      // 如果仍在缓冲且位置没变化，判定为停滞
       if (currentState.isLoading && currentState.lastPositionMillis === lastPositionMillis) {
         logger.warn(`[STALL] Buffering stall detected - no progress for ${STALL_TIMEOUT}ms`);
         get()._handleStall();
@@ -122,20 +167,15 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     const currentUrl = episodes[currentEpisodeIndex]?.url;
 
     if (retryCount < MAX_RETRIES) {
-      logger.info(`[STALL] Retry ${retryCount + 1}/${MAX_RETRIES} - attempting to reload video`);
+      logger.info(`[STALL] Retry ${retryCount + 1}/${MAX_RETRIES} - forcing Video rebuild`);
       set({ retryCount: retryCount + 1 });
-      const { videoRef } = get();
-      // 尝试重新加载当前视频
-      videoRef?.current?.reloadAsync?.()?.catch(() => {
-        // reloadAsync可能不可用，使用replayAsync作为备选
-        videoRef?.current?.replayAsync?.()?.catch(() => {});
-      });
+      // 停滞时直接重建Video组件，不再尝试reloadAsync（expo-av不支持）
+      get()._rebuildVideo();
       Toast.show({
         type: "info",
         text1: "视频加载缓慢，正在重试...",
       });
     } else {
-      // 超过重试次数，触发源切换
       logger.error(`[STALL] Max retries reached, switching to fallback source`);
       set({ retryCount: 0 });
       if (currentUrl) {
@@ -164,7 +204,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       episodes = episodesSelectorBySource(source)(useDetailStore.getState());
     }
 
-    set({ isLoading: true, retryCount: 0 });
+    set({ isLoading: true, retryCount: 0, consecutiveApiErrors: 0 });
     get()._stopStallDetection();
 
     const needsDetailInit = !detail || !episodes || episodes.length === 0 || detail.title !== title;
@@ -260,14 +300,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         title: `第 ${index + 1} 集`,
       }));
 
-      // 先unload旧视频再设置新状态，避免黑屏
-      const { videoRef } = get();
-      try {
-        await videoRef?.current?.stopAsync();
-      } catch (_e) {
-        // 忽略stop失败
-      }
-
+      // 关键修复：不再调用stopAsync()！
+      // stopAsync()在Android TV上会将ExoPlayer置于不可恢复状态
+      // 改为通过videoKey强制Video组件重新挂载
       set({
         isLoading: true,
         currentEpisodeIndex: episodeIndex,
@@ -276,6 +311,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         episodes: mappedEpisodes,
         introEndTime: playRecord?.introEndTime || playerSettings?.introEndTime,
         outroStartTime: playRecord?.outroStartTime || playerSettings?.outroStartTime,
+        videoKey: get().videoKey + 1, // 强制Video组件重新挂载
+        consecutiveApiErrors: 0,
       });
 
       // 启动停滞检测
@@ -292,20 +329,14 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
-  playEpisode: async (index) => {
-    const { episodes, videoRef } = get();
+  playEpisode: (index) => {
+    const { episodes, videoKey } = get();
     if (index >= 0 && index < episodes.length) {
-      // 停止旧的停滞检测
       get()._stopStallDetection();
-      set({ retryCount: 0 });
+      set({ retryCount: 0, consecutiveApiErrors: 0 });
 
-      // 先停止当前播放
-      try {
-        await videoRef?.current?.stopAsync();
-      } catch (_e) {
-        // 忽略
-      }
-
+      // 关键修复：不再调用stopAsync()！
+      // 通过改变videoKey + currentEpisodeIndex让Video组件切换源并重新挂载
       set({
         isLoading: true,
         currentEpisodeIndex: index,
@@ -313,11 +344,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         initialPosition: 0,
         progressPosition: 0,
         seekPosition: 0,
+        videoKey: videoKey + 1, // 强制Video组件重新挂载
       });
 
-      // 关键修复：不再使用replayAsync()
-      // source prop变化会触发Video组件重新加载新的URL
-      // 只需确保状态更新后，Video组件的source已切换
       logger.info(`[EPISODE] Switching to episode ${index + 1}, URL: ${episodes[index].url.substring(0, 80)}...`);
 
       // 启动停滞检测
@@ -327,17 +356,20 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
   togglePlayPause: async () => {
     const { status, videoRef } = get();
-    if (status?.isLoaded) {
-      try {
-        if (status.isPlaying) {
-          await videoRef?.current?.pauseAsync();
-        } else {
-          await videoRef?.current?.playAsync();
-        }
-      } catch (error) {
-        logger.debug("Failed to toggle play/pause:", error);
-        Toast.show({ type: "error", text1: "操作失败" });
-      }
+    if (!status?.isLoaded) {
+      // 播放器已死，尝试重建
+      logger.warn(`[TOGGLE] Player not loaded, attempting rebuild`);
+      get()._rebuildVideo();
+      return;
+    }
+    if (status.isPlaying) {
+      await get()._safeCall(async () => {
+        await videoRef?.current?.pauseAsync();
+      }, "操作失败");
+    } else {
+      await get()._safeCall(async () => {
+        await videoRef?.current?.playAsync();
+      }, "操作失败");
     }
   },
 
@@ -346,12 +378,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (!status?.isLoaded || !status.durationMillis) return;
 
     const newPosition = Math.max(0, Math.min(status.positionMillis + duration, status.durationMillis));
-    try {
+    await get()._safeCall(async () => {
       await videoRef?.current?.setPositionAsync(newPosition);
-    } catch (error) {
-      logger.debug("Failed to seek video:", error);
-      Toast.show({ type: "error", text1: "快进/快退失败" });
-    }
+    }, "快进/快退失败");
 
     set({
       isSeeking: true,
@@ -446,23 +475,21 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     const { currentEpisodeIndex, episodes, outroStartTime, playEpisode, retryCount } = get();
     const detail = useDetailStore.getState().detail;
 
-    // 更新位置追踪，用于停滞检测
     const currentPosition = newStatus.positionMillis || 0;
     const wasLoading = get().isLoading;
 
-    // 如果正在播放，清除加载状态并停止停滞检测
+    // 播放成功时重置API错误计数
     if (newStatus.isPlaying) {
       if (wasLoading) {
-        set({ isLoading: false, retryCount: 0 });
+        set({ isLoading: false, retryCount: 0, consecutiveApiErrors: 0 });
         get()._stopStallDetection();
       }
       set({ lastPositionMillis: currentPosition });
     }
 
-    // 如果缓冲中且位置有变化，说明还在下载，更新位置但保持loading
+    // 缓冲中但位置变化，说明还在下载
     if (newStatus.isBuffering && currentPosition !== get().lastPositionMillis) {
       set({ lastPositionMillis: currentPosition });
-      // 位置在变但仍在缓冲，重启停滞检测
       get()._startStallDetection();
     }
 
@@ -509,16 +536,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     const { videoRef } = get();
     const detail = useDetailStore.getState().detail;
 
-    try {
+    await get()._safeCall(async () => {
       await videoRef?.current?.setRateAsync(rate, true);
       set({ playbackRate: rate });
-
       if (detail) {
         await PlayerSettingsManager.save(detail.source, detail.id.toString(), { playbackRate: rate });
       }
-    } catch (error) {
-      logger.debug("Failed to set playback rate:", error);
-    }
+    }, "设置播放速度失败");
   },
 
   reset: () => {
@@ -539,6 +563,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       outroStartTime: undefined,
       retryCount: 0,
       lastPositionMillis: 0,
+      consecutiveApiErrors: 0,
+      videoKey: get().videoKey + 1, // unmount时也重建
     });
   },
 
@@ -587,21 +613,15 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           title: `第 ${index + 1} 集`,
         }));
 
-        // 停止当前播放再切换
-        const { videoRef } = get();
-        try {
-          await videoRef?.current?.stopAsync();
-        } catch (_e) {
-          // 忽略
-        }
-
+        // 关键修复：不再调用stopAsync()！通过videoKey重建
         set({
           episodes: mappedEpisodes,
           isLoading: true,
           retryCount: 0,
+          consecutiveApiErrors: 0,
+          videoKey: get().videoKey + 1, // 强制重建Video组件
         });
 
-        // 启动停滞检测
         get()._startStallDetection();
 
         const perfEnd = performance.now();

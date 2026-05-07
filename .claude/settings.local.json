@@ -15,7 +15,10 @@
       "Bash(yarn test-ci:*)",
       "Bash(python3 *)",
       "Bash(git -C /home/toy/example/OrionTV status --short)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(sed -n '140,165p' app/index.tsx)",
+      "Bash(sed -n '347,375p' app/index.tsx)",
+      "Bash(npx tsc *)"
     ],
     "deny": []
   }

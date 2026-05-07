@@ -110,6 +110,7 @@ export default function PlayScreen() {
     // setShowNextEpisodeOverlay,
     reset,
     loadVideo,
+  videoKey,
   } = usePlayerStore();
   const currentEpisode = usePlayerStore(selectCurrentEpisode);
 
@@ -168,7 +169,10 @@ export default function PlayScreen() {
       } else if (nextAppState === "active") {
         const { status } = usePlayerStore.getState();
         if (status?.isLoaded && !status.isPlaying) {
-          videoRef.current?.playAsync()?.catch(() => {});
+          usePlayerStore.getState()._safeCall(
+            async () => { await videoRef.current?.playAsync(); },
+            "恢复播放失败"
+          );
         }
       }
     };
@@ -234,7 +238,7 @@ export default function PlayScreen() {
       >
         {/* 条件渲染Video组件：只有在有有效URL时才渲染 */}
         {currentEpisode?.url ? (
-          <Video ref={videoRef} style={dynamicStyles.videoPlayer} {...videoProps} />
+          <Video ref={videoRef} key={videoKey} style={dynamicStyles.videoPlayer} {...videoProps} />
         ) : (
           <LoadingContainer style={dynamicStyles.loadingContainer} currentEpisode={currentEpisode} />
         )}

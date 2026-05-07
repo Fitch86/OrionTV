@@ -1,9 +1,10 @@
 import React, { useEffect, useCallback, useRef, useState } from "react";
-import { View, StyleSheet, ActivityIndicator, FlatList, Pressable, Animated, StatusBar, Platform, BackHandler, ToastAndroid } from "react-native";
+import { View, StyleSheet, ActivityIndicator, FlatList, Pressable, Animated, StatusBar, Platform, BackHandler, ToastAndroid, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { api } from "@/services/api";
+import { PlayRecordManager } from "@/services/storage";
 import VideoCard from "@/components/VideoCard";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Search, Settings, LogOut, Heart } from "lucide-react-native";
@@ -140,6 +141,25 @@ export default function HomeScreen() {
   const handleCategorySelect = (category: Category) => {
     setSelectedTag(null);
     selectCategory(category);
+  };
+
+  const handleClearAllRecords = () => {
+    Alert.alert("清除所有记录", "确定要删除所有观看记录吗？此操作不可恢复。", [
+      { text: "取消", style: "cancel" },
+      {
+        text: "全部删除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await PlayRecordManager.clearAll();
+            refreshPlayRecords();
+            ToastAndroid.show("已清除所有观看记录", ToastAndroid.SHORT);
+          } catch (error) {
+            ToastAndroid.show("清除记录失败", ToastAndroid.SHORT);
+          }
+        },
+      },
+    ]);
   };
 
   const handleTagSelect = (tag: string) => {
@@ -324,7 +344,33 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* 内容网格 */}
+      {/* 清除所有记录按钮 - 仅在最近播放分类且有数据时显示 */}
+        {selectedCategory?.type === "record" && contentData.length > 0 && !loading && (
+          <View style={{ paddingHorizontal: spacing * 1.5, paddingVertical: spacing / 4, flexDirection: "row", justifyContent: "flex-end" }}>
+            <Pressable
+              onPress={handleClearAllRecords}
+              style={({ focused }) => [{
+                paddingHorizontal: 16,
+                paddingVertical: 8,
+                borderRadius: 6,
+                backgroundColor: focused ? "rgba(255,255,255,0.15)" : "transparent",
+                borderWidth: 1,
+                borderColor: focused ? "rgba(255,100,100,0.6)" : "rgba(255,255,255,0.2)",
+              }]}
+            >
+              {({ focused }) => (
+                <ThemedText style={{
+                  fontSize: 14,
+                  color: focused ? "#ff6b6b" : "rgba(255,255,255,0.5)",
+                }}>
+                  清除所有记录
+                </ThemedText>
+              )}
+            </Pressable>
+          </View>
+        )}
+
+        {/* 内容网格 */}
       {shouldShowApiConfig ? (
         <View style={commonStyles.center}>
           <ThemedText type="subtitle" style={{ padding: spacing, textAlign: "center" }}>
