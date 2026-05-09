@@ -169,10 +169,7 @@ export default function PlayScreen() {
       } else if (nextAppState === "active") {
         const { status } = usePlayerStore.getState();
         if (status?.isLoaded && !status.isPlaying) {
-          usePlayerStore.getState()._safeCall(
-            async () => { await videoRef.current?.playAsync(); },
-            "恢复播放失败"
-          );
+          videoRef.current?.playAsync()?.catch(() => {});
         }
       }
     };

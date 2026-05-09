@@ -1,4 +1,4 @@
-import { useCallback, RefObject, useMemo, useRef } from 'react';
+import { useCallback, RefObject, useMemo } from 'react';
 import { Video, ResizeMode } from 'expo-av';
 import Toast from 'react-native-toast-message';
 import usePlayerStore from '@/stores/playerStore';
@@ -17,9 +17,6 @@ interface UseVideoHandlersProps {
   detail?: { poster?: string };
 }
 
-// 上一集URL的ref，用于检测真正的源切换
-let _lastLoadedUrl = '';
-
 export const useVideoHandlers = ({
   videoRef,
   currentEpisode,
@@ -34,28 +31,28 @@ export const useVideoHandlers = ({
   const onLoad = useCallback(async () => {
     logger.info(`Video onLoad - video ready to play`);
 
-    try {
-      const jumpPosition = initialPosition || introEndTime || 0;
-      if (jumpPosition > 0) {
-        logger.info(`Setting initial position to ${jumpPosition}ms`);
-        await videoRef.current?.setPositionAsync(jumpPosition);
-      }
+    // 从store直接读取最新的initialPosition，避免闭包陈旧问题
+    const state = usePlayerStore.getState();
+    const pos = state.initialPosition || state.introEndTime || 0;
 
-      logger.info(`Attempting to start playback after onLoad`);
+    try {
+      if (pos > 0) {
+        logger.info(`Setting initial position to ${pos}ms`);
+        await videoRef.current?.setPositionAsync(pos);
+      }
+      // shouldPlay: true已经让expo-av自动播放，不需要再调用playAsync()
+      // 只在shouldPlay未生效时作为备用
       await videoRef.current?.playAsync();
       logger.info(`Auto-play successful after onLoad`);
-
       usePlayerStore.setState({ isLoading: false });
-      logger.info(`Video loading complete - isLoading set to false`);
     } catch (error) {
-      logger.warn(`Failed to auto-play after onLoad:`, error);
+      logger.warn(`Failed after onLoad:`, error);
       usePlayerStore.setState({ isLoading: false });
     }
-  }, [videoRef, initialPosition, introEndTime]);
+  }, [videoRef]); // 只依赖videoRef，位置从store读取
 
   const onLoadStart = useCallback(() => {
     if (!currentEpisode?.url) return;
-
     logger.info(`Video onLoadStart - starting to load: ${currentEpisode.url.substring(0, 100)}...`);
     usePlayerStore.setState({ isLoading: true });
   }, [currentEpisode?.url]);
@@ -74,7 +71,6 @@ export const useVideoHandlers = ({
       errorString.includes('SocketTimeoutException');
 
     if (isSSLError) {
-      logger.error(`SSL certificate validation failed for URL: ${currentEpisode.url}`);
       Toast.show({
         type: "error",
         text1: "SSL证书错误，正在尝试其他播放源...",
@@ -82,7 +78,6 @@ export const useVideoHandlers = ({
       });
       usePlayerStore.getState().handleVideoError('ssl', currentEpisode.url);
     } else if (isNetworkError) {
-      logger.error(`Network connection failed for URL: ${currentEpisode.url}`);
       Toast.show({
         type: "error",
         text1: "网络连接失败，正在尝试其他播放源...",
@@ -90,7 +85,6 @@ export const useVideoHandlers = ({
       });
       usePlayerStore.getState().handleVideoError('network', currentEpisode.url);
     } else {
-      logger.error(`Other video error for URL: ${currentEpisode.url}`);
       Toast.show({
         type: "error",
         text1: "视频播放失败，正在尝试其他播放源...",
