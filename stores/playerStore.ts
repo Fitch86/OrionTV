@@ -8,6 +8,19 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
 
+// Toast去重：同一消息5秒内不重复弹出
+let _lastToastText = '';
+let _lastToastTime = 0;
+const TOAST_DEDUP_MS = 5000;
+const showToast = (type: string, text1: string, text2?: string) => {
+  const now = Date.now();
+  const key = `${type}-${text1}`;
+  if (key === _lastToastText && now - _lastToastTime < TOAST_DEDUP_MS) return;
+  _lastToastText = key;
+  _lastToastTime = now;
+  Toast.show({ type: type as any, text1, text2 });
+};
+
 // 缓冲停滞检测阈值
 const STALL_TIMEOUT = 15000; // 15s无进度视为停滞
 const MAX_RETRIES = 2; // 停滞后最大重试次数
@@ -136,17 +149,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         if (newCount >= CONSECUTIVE_ERROR_THRESHOLD) {
           logger.error(`[SAFE_CALL] Player appears dead (errors=${newCount}), forcing rebuild`);
           get()._rebuildVideo();
-          Toast.show({
-            type: "info",
-            text1: "正在恢复播放器...",
-            text2: "请稍候"
-          });
+          showToast("info", "正在恢复播放器...", "请稍候");
         } else {
-          Toast.show({ type: "error", text1: errorText });
+          showToast("error", errorText);
         }
       } else {
         // 非致命错误（如正在缓冲中操作被拒绝），只提示不重建
-        Toast.show({ type: "error", text1: errorText });
+        showToast("error", errorText);
       }
       return false;
     }
@@ -181,10 +190,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       logger.info(`[STALL] Retry ${retryCount + 1}/${MAX_RETRIES} - forcing Video rebuild`);
       set({ retryCount: retryCount + 1 });
       get()._rebuildVideo();
-      Toast.show({
-        type: "info",
-        text1: "视频加载缓慢，正在重试...",
-      });
+      showToast("info", "视频加载缓慢，正在重试...");
     } else {
       logger.error(`[STALL] Max retries reached, switching to fallback source`);
       set({ retryCount: 0 });
@@ -325,9 +331,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   togglePlayPause: async () => {
     const { status, videoRef } = get();
     if (!status?.isLoaded) {
-      // 播放器确实没加载成功，尝试重建
       logger.warn(`[TOGGLE] Player not loaded, attempting rebuild`);
       get()._rebuildVideo();
+      return;
+    }
+    // 缓冲中不提示错误，等缓冲完自动播放
+    if (status.isBuffering) {
+      logger.info(`[TOGGLE] Player is buffering, ignoring toggle`);
       return;
     }
     if (status.isPlaying) {
@@ -364,7 +374,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     } catch (error) {
       logger.warn(`[SEEK] Seek failed:`, error?.toString()?.substring(0, 100));
       // 快进快退失败不触发重建，只是提示
-      Toast.show({ type: "error", text1: "快进/快退失败，请稍后重试" });
+      // 快进快退失败静默处理，不弹toast干扰
     }
   },
 
@@ -376,12 +386,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (existingIntroEndTime) {
       set({ introEndTime: undefined });
       get()._savePlayRecord({ introEndTime: undefined }, { immediate: true });
-      Toast.show({ type: "info", text1: "已清除片头时间" });
+      showToast("info", "已清除片头时间");
     } else {
       const newIntroEndTime = status.positionMillis;
       set({ introEndTime: newIntroEndTime });
       get()._savePlayRecord({ introEndTime: newIntroEndTime }, { immediate: true });
-      Toast.show({ type: "success", text1: "设置成功", text2: "片头时间已记录。" });
+      showToast("success", "设置成功", "片头时间已记录");
     }
   },
 
@@ -393,13 +403,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (existingOutroStartTime) {
       set({ outroStartTime: undefined });
       get()._savePlayRecord({ outroStartTime: undefined }, { immediate: true });
-      Toast.show({ type: "info", text1: "已清除片尾时间" });
+      showToast("info", "已清除片尾时间");
     } else {
       if (!status.durationMillis) return;
       const newOutroStartTime = status.durationMillis - status.positionMillis;
       set({ outroStartTime: newOutroStartTime });
       get()._savePlayRecord({ outroStartTime: newOutroStartTime }, { immediate: true });
-      Toast.show({ type: "success", text1: "设置成功", text2: "片尾时间已记录。" });
+      showToast("success", "设置成功", "片尾时间已记录");
     }
   },
 
@@ -518,7 +528,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     } catch (error) {
       logger.warn(`[RATE] Set rate failed:`, error?.toString()?.substring(0, 100));
-      Toast.show({ type: "error", text1: "设置播放速度失败" });
+      showToast("error", "设置播放速度失败");
     }
   },
 
@@ -569,11 +579,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     if (!fallbackSource) {
       logger.error(`[VIDEO_ERROR] No fallback sources available for episode ${currentEpisodeIndex + 1}`);
-      Toast.show({
-        type: "error",
-        text1: "播放失败",
-        text2: "所有播放源都不可用，请稍后重试"
-      });
+      showToast("error", "播放失败", "所有播放源都不可用");
       set({ isLoading: false });
       return;
     }

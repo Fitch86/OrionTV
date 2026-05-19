@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Animated, Platform, ToastAndroid } from "react-native";
 import { useRouter } from "expo-router";
-import { Star, Play } from "lucide-react-native";
+import { Star, Play, Trash2 } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
@@ -19,12 +19,12 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   year?: string;
   rate?: string;
   sourceName?: string;
-  progress?: number; // 播放进度，0-1之间的小数
-  playTime?: number; // 播放时间 in ms
-  episodeIndex?: number; // 剧集索引
-  totalEpisodes?: number; // 总集数
+  progress?: number;
+  playTime?: number;
+  episodeIndex?: number;
+  totalEpisodes?: number;
   onFocus?: () => void;
-  onRecordDeleted?: () => void; // 添加回调属性
+  onRecordDeleted?: () => void;
   api: API;
 }
 
@@ -50,10 +50,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     const router = useRouter();
     const [isFocused, setIsFocused] = useState(false);
     const [fadeAnim] = useState(new Animated.Value(0));
-
-    const longPressTriggered = useRef(false);
+    const [showDeleteHint, setShowDeleteHint] = useState(false);
 
     const scale = useRef(new Animated.Value(1)).current;
+    const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     const deviceType = useResponsiveLayout().deviceType;
 
@@ -62,10 +62,6 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     };
 
     const handlePress = () => {
-      if (longPressTriggered.current) {
-        longPressTriggered.current = false;
-        return;
-      }
       // 如果有播放进度，直接转到播放页面
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
@@ -88,64 +84,62 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         stiffness: 200,
         useNativeDriver: true,
       }).start();
+
+      // 对有播放记录的卡片，延迟1.5秒显示删除提示
+      if (progress !== undefined) {
+        longPressTimerRef.current = setTimeout(() => {
+          setShowDeleteHint(true);
+        }, 1500);
+      }
+
       onFocus?.();
-    }, [scale, onFocus]);
+    }, [scale, onFocus, progress]);
 
     const handleBlur = useCallback(() => {
       setIsFocused(false);
+      setShowDeleteHint(false);
       Animated.spring(scale, {
         toValue: 1.0,
+        damping: 15,
+        stiffness: 200,
         useNativeDriver: true,
       }).start();
+
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
     }, [scale]);
 
     useEffect(() => {
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 400,
-        delay: Math.random() * 200, // 随机延迟创造交错效果
+        delay: Math.random() * 200,
         useNativeDriver: true,
       }).start();
     }, [fadeAnim]);
 
     const handleLongPress = () => {
-      // Only allow long press for items with progress (play records)
+      // 只有播放记录才允许长按删除
       if (progress === undefined) return;
 
-      longPressTriggered.current = true;
-
-      // Show confirmation dialog to delete play record
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Delete from local storage
-              await PlayRecordManager.remove(source, id);
-
-              // Call the onRecordDeleted callback
-              if (onRecordDeleted) {
-                onRecordDeleted();
-              }
-              // 如果没有回调函数，则使用导航刷新作为备选方案
-              else if (router.canGoBack()) {
-                router.replace("/");
-              }
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
-          },
-        },
-      ]);
+      // TV上不用Alert.alert（遥控器无法操作对话框），直接删除并Toast通知
+      PlayRecordManager.remove(source, id)
+        .then(() => {
+          if (Platform.OS === 'android') {
+            ToastAndroid.show(`已删除"${title}"的观看记录`, ToastAndroid.SHORT);
+          }
+          onRecordDeleted?.();
+        })
+        .catch((error) => {
+          logger.info("Failed to delete play record:", error);
+          if (Platform.OS === 'android') {
+            ToastAndroid.show("删除记录失败，请重试", ToastAndroid.SHORT);
+          }
+        });
     };
 
-    // 是否是继续观看的视频
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
 
     return (
@@ -159,11 +153,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           style={({ pressed }) => [
             styles.pressable,
             {
-              zIndex: pressed ? 999 : 1, // 确保按下时有最高优先级
+              zIndex: pressed ? 999 : 1,
             },
           ]}
-          // activeOpacity={1}
-          delayLongPress={1000}
+          delayLongPress={800}
         >
           <View style={styles.card}>
             <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
@@ -173,6 +166,13 @@ const VideoCard = forwardRef<View, VideoCardProps>(
                   <View style={styles.continueWatchingBadge}>
                     <Play size={16} color="#ffffff" fill="#ffffff" />
                     <ThemedText style={styles.continueWatchingText}>继续观看</ThemedText>
+                  </View>
+                )}
+                {/* 长按提示：聚焦1.5秒后显示 */}
+                {showDeleteHint && progress !== undefined && (
+                  <View style={styles.deleteHintContainer}>
+                    <Trash2 size={14} color="#ff6b6b" />
+                    <Text style={styles.deleteHintText}>长按删除记录</Text>
                   </View>
                 )}
               </View>
@@ -257,20 +257,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  buttonRow: {
+  deleteHintContainer: {
     position: "absolute",
-    top: 8,
-    left: 8,
+    bottom: 12,
     flexDirection: "row",
-    gap: 8,
+    alignItems: "center",
+    backgroundColor: "rgba(255,50,50,0.85)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 5,
   },
-  iconButton: {
-    padding: 4,
-  },
-  favButton: {
-    position: "absolute",
-    top: 8,
-    left: 8,
+  deleteHintText: {
+    color: "white",
+    fontSize: 11,
+    marginLeft: 4,
+    fontWeight: "bold",
   },
   ratingContainer: {
     position: "absolute",
@@ -300,12 +301,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     width: "100%",
-  },
-  title: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    textAlign: "center",
   },
   yearBadge: {
     position: "absolute",

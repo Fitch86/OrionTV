@@ -29,6 +29,39 @@ interface DetailState {
   getNextAvailableSource: (currentSource: string, episodeIndex: number) => SearchResultWithResolution | null;
 }
 
+// 选择最佳详情：优先probe可访问+低ping的源
+const pickBestDetail = (results: SearchResultWithResolution[], q: string | null): SearchResultWithResolution | null => {
+  if (results.length === 0) return null;
+  if (results.length === 1) return results[0];
+
+  const scored = results
+    .filter(r => r.episodes && r.episodes.length > 0)
+    .map(r => {
+      let score = 0;
+      const probe = r.probeResult;
+      if (probe?.accessible) {
+        score += 1000;
+        if (probe.pingMs < 200) score += 500;
+        else if (probe.pingMs < 500) score += 400;
+        else if (probe.pingMs < 1000) score += 300;
+        else score += 100;
+      } else if (probe && !probe.accessible) {
+        score -= 500;
+      } else {
+        score += 100;
+      }
+      const res = r.resolution || '';
+      if (res.includes('1080')) score += 40;
+      else if (res.includes('720')) score += 30;
+      else if (res.includes('480')) score += 20;
+
+      return { result: r, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored.length > 0 ? scored[0].result : results[0];
+};
+
 const useDetailStore = create<DetailState>((set, get) => ({
   q: null,
   searchResults: [],
@@ -41,7 +74,8 @@ const useDetailStore = create<DetailState>((set, get) => ({
   isFavorited: false,
   failedSources: new Set(),
 
-  init: async (q, preferredSource, id) => {
+
+init: async (q, preferredSource, id) => {
     const perfStart = performance.now();
     logger.info(`[PERF] DetailStore.init START - q: ${q}, preferredSource: ${preferredSource}, id: ${id}`);
     
@@ -106,7 +140,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
             source_name: r.source_name,
             resolution: r.resolution,
           })),
-          detail: state.detail ?? finalResults[0] ?? null,
+          detail: state.detail ?? pickBestDetail(finalResults, state.q) ?? null,
         };
       });
     };
