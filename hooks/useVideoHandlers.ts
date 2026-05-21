@@ -31,25 +31,21 @@ export const useVideoHandlers = ({
   const onLoad = useCallback(async () => {
     logger.info(`Video onLoad - video ready to play`);
 
-    // 从store直接读取最新的initialPosition，避免闭包陈旧问题
-    const state = usePlayerStore.getState();
-    const pos = state.initialPosition || state.introEndTime || 0;
-
     try {
-      if (pos > 0) {
-        logger.info(`Setting initial position to ${pos}ms`);
-        await videoRef.current?.setPositionAsync(pos);
+      const jumpPosition = initialPosition || introEndTime || 0;
+      if (jumpPosition > 0) {
+        logger.info(`Setting initial position to ${jumpPosition}ms`);
+        await videoRef.current?.setPositionAsync(jumpPosition);
       }
-      // shouldPlay: true已经让expo-av自动播放，不需要再调用playAsync()
-      // 只在shouldPlay未生效时作为备用
+      logger.info(`Attempting to start playback after onLoad`);
       await videoRef.current?.playAsync();
       logger.info(`Auto-play successful after onLoad`);
       usePlayerStore.setState({ isLoading: false });
     } catch (error) {
-      logger.warn(`Failed after onLoad:`, error);
+      logger.warn(`Failed to auto-play after onLoad:`, error);
       usePlayerStore.setState({ isLoading: false });
     }
-  }, [videoRef]); // 只依赖videoRef，位置从store读取
+  }, [videoRef, initialPosition, introEndTime]);
 
   const onLoadStart = useCallback(() => {
     if (!currentEpisode?.url) return;

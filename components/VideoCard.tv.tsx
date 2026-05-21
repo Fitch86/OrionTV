@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Animated, Platform, ToastAndroid } from "react-native";
+import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
 import { useRouter } from "expo-router";
-import { Star, Play, Trash2 } from "lucide-react-native";
+import { Star, Play } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
@@ -50,10 +50,9 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     const router = useRouter();
     const [isFocused, setIsFocused] = useState(false);
     const [fadeAnim] = useState(new Animated.Value(0));
-    const [showDeleteHint, setShowDeleteHint] = useState(false);
+    const longPressTriggered = useRef(false);
 
     const scale = useRef(new Animated.Value(1)).current;
-    const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     const deviceType = useResponsiveLayout().deviceType;
 
@@ -62,6 +61,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     };
 
     const handlePress = () => {
+      if (longPressTriggered.current) {
+        longPressTriggered.current = false;
+        return;
+      }
       // 如果有播放进度，直接转到播放页面
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
@@ -85,30 +88,17 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         useNativeDriver: true,
       }).start();
 
-      // 对有播放记录的卡片，延迟1.5秒显示删除提示
-      if (progress !== undefined) {
-        longPressTimerRef.current = setTimeout(() => {
-          setShowDeleteHint(true);
-        }, 1500);
-      }
-
       onFocus?.();
-    }, [scale, onFocus, progress]);
+    }, [scale, onFocus]);
 
     const handleBlur = useCallback(() => {
       setIsFocused(false);
-      setShowDeleteHint(false);
       Animated.spring(scale, {
         toValue: 1.0,
         damping: 15,
         stiffness: 200,
         useNativeDriver: true,
       }).start();
-
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
     }, [scale]);
 
     useEffect(() => {
@@ -124,20 +114,35 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       // 只有播放记录才允许长按删除
       if (progress === undefined) return;
 
-      // TV上不用Alert.alert（遥控器无法操作对话框），直接删除并Toast通知
-      PlayRecordManager.remove(source, id)
-        .then(() => {
-          if (Platform.OS === 'android') {
-            ToastAndroid.show(`已删除"${title}"的观看记录`, ToastAndroid.SHORT);
-          }
-          onRecordDeleted?.();
-        })
-        .catch((error) => {
-          logger.info("Failed to delete play record:", error);
-          if (Platform.OS === 'android') {
-            ToastAndroid.show("删除记录失败，请重试", ToastAndroid.SHORT);
-          }
-        });
+      longPressTriggered.current = true;
+
+      Alert.alert(
+        "删除观看记录",
+        `确定要删除"${title}"的观看记录吗？`,
+        [
+          {
+            text: "取消",
+            style: "cancel",
+          },
+          {
+            text: "删除",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await PlayRecordManager.remove(source, id);
+                if (onRecordDeleted) {
+                  onRecordDeleted();
+                } else if (router.canGoBack()) {
+                  router.replace("/");
+                }
+              } catch (error) {
+                logger.info("Failed to delete play record:", error);
+                Alert.alert("错误", "删除观看记录失败，请重试");
+              }
+            },
+          },
+        ]
+      );
     };
 
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
@@ -156,7 +161,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
               zIndex: pressed ? 999 : 1,
             },
           ]}
-          delayLongPress={800}
+          delayLongPress={1000}
         >
           <View style={styles.card}>
             <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
@@ -166,13 +171,6 @@ const VideoCard = forwardRef<View, VideoCardProps>(
                   <View style={styles.continueWatchingBadge}>
                     <Play size={16} color="#ffffff" fill="#ffffff" />
                     <ThemedText style={styles.continueWatchingText}>继续观看</ThemedText>
-                  </View>
-                )}
-                {/* 长按提示：聚焦1.5秒后显示 */}
-                {showDeleteHint && progress !== undefined && (
-                  <View style={styles.deleteHintContainer}>
-                    <Trash2 size={14} color="#ff6b6b" />
-                    <Text style={styles.deleteHintText}>长按删除记录</Text>
                   </View>
                 )}
               </View>
@@ -256,22 +254,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
-  },
-  deleteHintContainer: {
-    position: "absolute",
-    bottom: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255,50,50,0.85)",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 5,
-  },
-  deleteHintText: {
-    color: "white",
-    fontSize: 11,
-    marginLeft: 4,
-    fontWeight: "bold",
   },
   ratingContainer: {
     position: "absolute",
