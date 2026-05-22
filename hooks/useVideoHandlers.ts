@@ -31,21 +31,24 @@ export const useVideoHandlers = ({
   const onLoad = useCallback(async () => {
     logger.info(`Video onLoad - video ready to play`);
 
+    // 从store读取最新位置，避免闭包陈旧值和videoProps不必要的重算
+    const state = usePlayerStore.getState();
+    const pos = state.initialPosition || state.introEndTime || 0;
+
     try {
-      const jumpPosition = initialPosition || introEndTime || 0;
-      if (jumpPosition > 0) {
-        logger.info(`Setting initial position to ${jumpPosition}ms`);
-        await videoRef.current?.setPositionAsync(jumpPosition);
+      if (pos > 0) {
+        logger.info(`Setting initial position to ${pos}ms`);
+        await videoRef.current?.setPositionAsync(pos);
       }
-      logger.info(`Attempting to start playback after onLoad`);
+      // shouldPlay:true已通过videoProps设置，这里作为备用确保播放
       await videoRef.current?.playAsync();
       logger.info(`Auto-play successful after onLoad`);
-      usePlayerStore.setState({ isLoading: false });
+      usePlayerStore.setState({ isLoading: false, _isTransitioning: false });
     } catch (error) {
-      logger.warn(`Failed to auto-play after onLoad:`, error);
-      usePlayerStore.setState({ isLoading: false });
+      logger.warn(`Failed after onLoad:`, error);
+      usePlayerStore.setState({ isLoading: false, _isTransitioning: false });
     }
-  }, [videoRef, initialPosition, introEndTime]);
+  }, [videoRef]); // 只依赖videoRef，位置从store实时读取
 
   const onLoadStart = useCallback(() => {
     if (!currentEpisode?.url) return;
