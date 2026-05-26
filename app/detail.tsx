@@ -5,12 +5,57 @@ import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
-import useDetailStore from "@/stores/detailStore";
+import useDetailStore, { SearchResultWithResolution } from "@/stores/detailStore";
 import { FontAwesome } from "@expo/vector-icons";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
+
+// 源评分函数（同SourceSelectionModal）
+const getSourceScore = (item: SearchResultWithResolution): number => {
+  let score = 0;
+  const probe = item.probeResult;
+  if (probe?.accessible) {
+    score += 1000;
+    if (probe.pingMs < 200) score += 500;
+    else if (probe.pingMs < 500) score += 400;
+    else if (probe.pingMs < 1000) score += 300;
+    else if (probe.pingMs < 2000) score += 200;
+    else score += 100;
+  } else if (probe && !probe.accessible) {
+    score -= 500;
+  } else { score += 100; }
+  const res = item.resolution || '';
+  if (res.includes('1080')) score += 40;
+  else if (res.includes('720')) score += 30;
+  else if (res.includes('480')) score += 20;
+  else if (res.includes('360')) score += 10;
+  return score;
+};
+
+const getSpeedLabel = (item: SearchResultWithResolution) => {
+  if (item.probeResult?.accessible) {
+    const ping = item.probeResult.pingMs;
+    if (ping < 200) return '极快';
+    if (ping < 500) return '快';
+    if (ping < 1000) return '中';
+    return '慢';
+  }
+  if (item.probeResult && !item.probeResult.accessible) return '不可用';
+  return '';
+};
+
+const getSpeedColor = (item: SearchResultWithResolution) => {
+  if (item.probeResult?.accessible) {
+    const ping = item.probeResult.pingMs;
+    if (ping < 500) return '#4ade80';
+    if (ping < 1000) return '#facc15';
+    return '#fb923c';
+  }
+  if (item.probeResult && !item.probeResult.accessible) return '#ef4444';
+  return '#888';
+};
 
 export default function DetailScreen() {
   const { q, source, id } = useLocalSearchParams<{ q: string; source?: string; id?: string }>();
@@ -145,8 +190,10 @@ export default function DetailScreen() {
               {!allSourcesLoaded && <ActivityIndicator style={{ marginLeft: 10 }} />}
             </View>
             <View style={dynamicStyles.sourceList}>
-              {searchResults.map((item, index) => {
+              {[...searchResults].sort((a, b) => getSourceScore(b) - getSourceScore(a)).map((item, index) => {
                 const isSelected = detail?.source === item.source;
+            const speedLabel = getSpeedLabel(item);
+            const speedColor = getSpeedColor(item);
                 return (
                   <StyledButton
                     key={index}
@@ -162,7 +209,12 @@ export default function DetailScreen() {
                         </Text>
                       </View>
                     )}
-                    {item.resolution && (
+                    {speedLabel ? (
+                  <View style={[dynamicStyles.badge, { backgroundColor: "rgba(0,0,0,0.6)" }, isSelected && dynamicStyles.selectedBadge]}>
+                    <Text style={[dynamicStyles.badgeText, { color: speedColor }]}>{speedLabel}</Text>
+                  </View>
+                ) : null}
+                {item.resolution && (
                       <View style={[dynamicStyles.badge, { backgroundColor: "#666" }, isSelected && dynamicStyles.selectedBadge]}>
                         <Text style={dynamicStyles.badgeText}>{item.resolution}</Text>
                       </View>
@@ -227,8 +279,10 @@ export default function DetailScreen() {
                 {!allSourcesLoaded && <ActivityIndicator style={{ marginLeft: 10 }} />}
               </View>
               <View style={dynamicStyles.sourceList}>
-                {searchResults.map((item, index) => {
+                {[...searchResults].sort((a, b) => getSourceScore(b) - getSourceScore(a)).map((item, index) => {
                   const isSelected = detail?.source === item.source;
+            const speedLabel = getSpeedLabel(item);
+            const speedColor = getSpeedColor(item);
                   return (
                     <StyledButton
                       key={index}
@@ -245,7 +299,12 @@ export default function DetailScreen() {
                           </Text>
                         </View>
                       )}
-                      {item.resolution && (
+                      {speedLabel ? (
+                  <View style={[dynamicStyles.badge, { backgroundColor: "rgba(0,0,0,0.6)" }, isSelected && dynamicStyles.selectedBadge]}>
+                    <Text style={[dynamicStyles.badgeText, { color: speedColor }]}>{speedLabel}</Text>
+                  </View>
+                ) : null}
+                {item.resolution && (
                         <View style={[dynamicStyles.badge, { backgroundColor: "#666" }, isSelected && dynamicStyles.selectedBadge]}>
                           <Text style={dynamicStyles.badgeText}>{item.resolution}</Text>
                         </View>

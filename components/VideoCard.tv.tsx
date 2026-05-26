@@ -19,12 +19,12 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   year?: string;
   rate?: string;
   sourceName?: string;
-  progress?: number;
-  playTime?: number;
-  episodeIndex?: number;
-  totalEpisodes?: number;
+  progress?: number; // 播放进度，0-1之间的小数
+  playTime?: number; // 播放时间 in ms
+  episodeIndex?: number; // 剧集索引
+  totalEpisodes?: number; // 总集数
   onFocus?: () => void;
-  onRecordDeleted?: () => void;
+  onRecordDeleted?: () => void; // 添加回调属性
   api: API;
 }
 
@@ -50,6 +50,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     const router = useRouter();
     const [isFocused, setIsFocused] = useState(false);
     const [fadeAnim] = useState(new Animated.Value(0));
+
     const longPressTriggered = useRef(false);
 
     const scale = useRef(new Animated.Value(1)).current;
@@ -87,7 +88,6 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         stiffness: 200,
         useNativeDriver: true,
       }).start();
-
       onFocus?.();
     }, [scale, onFocus]);
 
@@ -95,8 +95,6 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       setIsFocused(false);
       Animated.spring(scale, {
         toValue: 1.0,
-        damping: 15,
-        stiffness: 200,
         useNativeDriver: true,
       }).start();
     }, [scale]);
@@ -105,46 +103,49 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 400,
-        delay: Math.random() * 200,
+        delay: Math.random() * 200, // 随机延迟创造交错效果
         useNativeDriver: true,
       }).start();
     }, [fadeAnim]);
 
     const handleLongPress = () => {
-      // 只有播放记录才允许长按删除
+      // Only allow long press for items with progress (play records)
       if (progress === undefined) return;
 
       longPressTriggered.current = true;
 
-      Alert.alert(
-        "删除观看记录",
-        `确定要删除"${title}"的观看记录吗？`,
-        [
-          {
-            text: "取消",
-            style: "cancel",
-          },
-          {
-            text: "删除",
-            style: "destructive",
-            onPress: async () => {
-              try {
-                await PlayRecordManager.remove(source, id);
-                if (onRecordDeleted) {
-                  onRecordDeleted();
-                } else if (router.canGoBack()) {
-                  router.replace("/");
-                }
-              } catch (error) {
-                logger.info("Failed to delete play record:", error);
-                Alert.alert("错误", "删除观看记录失败，请重试");
+      // Show confirmation dialog to delete play record
+      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
+        {
+          text: "取消",
+          style: "cancel",
+        },
+        {
+          text: "删除",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // Delete from local storage
+              await PlayRecordManager.remove(source, id);
+
+              // Call the onRecordDeleted callback
+              if (onRecordDeleted) {
+                onRecordDeleted();
               }
-            },
+              // 如果没有回调函数，则使用导航刷新作为备选方案
+              else if (router.canGoBack()) {
+                router.replace("/");
+              }
+            } catch (error) {
+              logger.info("Failed to delete play record:", error);
+              Alert.alert("错误", "删除观看记录失败，请重试");
+            }
           },
-        ]
-      );
+        },
+      ]);
     };
 
+    // 是否是继续观看的视频
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
 
     return (
@@ -158,9 +159,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           style={({ pressed }) => [
             styles.pressable,
             {
-              zIndex: pressed ? 999 : 1,
+              zIndex: pressed ? 999 : 1, // 确保按下时有最高优先级
             },
           ]}
+          // activeOpacity={1}
           delayLongPress={1000}
         >
           <View style={styles.card}>
@@ -255,6 +257,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  buttonRow: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    flexDirection: "row",
+    gap: 8,
+  },
+  iconButton: {
+    padding: 4,
+  },
+  favButton: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+  },
   ratingContainer: {
     position: "absolute",
     top: 8,
@@ -283,6 +300,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     width: "100%",
+  },
+  title: {
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
+    textAlign: "center",
   },
   yearBadge: {
     position: "absolute",

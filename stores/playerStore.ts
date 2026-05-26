@@ -8,19 +8,6 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
 
-// Toast去重：同一消息5秒内不重复弹出
-let _lastToastText = '';
-let _lastToastTime = 0;
-const TOAST_DEDUP_MS = 5000;
-const showToast = (type: string, text1: string, text2?: string) => {
-  const now = Date.now();
-  const key = `${type}-${text1}`;
-  if (key === _lastToastText && now - _lastToastTime < TOAST_DEDUP_MS) return;
-  _lastToastText = key;
-  _lastToastTime = now;
-  Toast.show({ type: type as any, text1, text2 });
-};
-
 // 缓冲停滞检测阈值
 const STALL_TIMEOUT = 15000; // 15s无进度视为停滞
 const MAX_RETRIES = 2; // 停滞后最大重试次数
@@ -32,7 +19,6 @@ interface Episode {
 
 interface PlayerState {
   videoRef: RefObject<Video> | null;
-  videoKey: number;
   currentEpisodeIndex: number;
   episodes: Episode[];
   status: AVPlaybackStatus | null;
@@ -52,8 +38,6 @@ interface PlayerState {
   retryCount: number;
   stallTimer?: NodeJS.Timeout;
   lastPositionMillis: number;
-  _isTransitioning: boolean; // 源切换期间，静默操作错误
-  _sourceChangeId: number; // 用于追踪源切换，防止旧回调干扰
   setVideoRef: (ref: RefObject<Video>) => void;
   loadVideo: (options: {
     source: string;
@@ -83,12 +67,10 @@ interface PlayerState {
   _startStallDetection: () => void;
   _stopStallDetection: () => void;
   _handleStall: () => void;
-  _rebuildVideo: () => void;
 }
 
 const usePlayerStore = create<PlayerState>((set, get) => ({
   videoRef: null,
-  videoKey: 0,
   episodes: [],
   currentEpisodeIndex: -1,
   status: null,
@@ -110,22 +92,15 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   retryCount: 0,
   stallTimer: undefined,
   lastPositionMillis: 0,
-  _isTransitioning: false,
-  _sourceChangeId: 0,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
-
-  _rebuildVideo: () => {
-    const { videoKey } = get();
-    logger.warn(`[REBUILD] Forcing Video component rebuild (key ${videoKey} -> ${videoKey + 1})`);
-    set({ videoKey: videoKey + 1 });
-  },
 
   _startStallDetection: () => {
     get()._stopStallDetection();
     const { lastPositionMillis, status } = get();
     const timer = setTimeout(() => {
       const currentState = get();
+      // 如果仍在缓冲且位置没变化，判定为停滞
       if (currentState.isLoading && currentState.lastPositionMillis === lastPositionMillis) {
         logger.warn(`[STALL] Buffering stall detected - no progress for ${STALL_TIMEOUT}ms`);
         get()._handleStall();
@@ -142,16 +117,22 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
-  _handleStall: () => {
+  _handleStall: async () => {
     const { retryCount, episodes, currentEpisodeIndex } = get();
     const currentUrl = episodes[currentEpisodeIndex]?.url;
 
     if (retryCount < MAX_RETRIES) {
-      logger.info(`[STALL] Retry ${retryCount + 1}/${MAX_RETRIES} - rebuilding Video component`);
+      logger.info(`[STALL] Retry ${retryCount + 1}/${MAX_RETRIES} - attempting to reload video`);
       set({ retryCount: retryCount + 1 });
-      get()._rebuildVideo();
-      showToast("info", "视频加载缓慢，正在重试...");
+      const { videoRef } = get();
+      // 尝试重新加载当前视频
+      try { await videoRef?.current?.replayAsync(); } catch (_e) { /* 忽略 */ }
+      Toast.show({
+        type: "info",
+        text1: "视频加载缓慢，正在重试...",
+      });
     } else {
+      // 超过重试次数，触发源切换
       logger.error(`[STALL] Max retries reached, switching to fallback source`);
       set({ retryCount: 0 });
       if (currentUrl) {
@@ -180,13 +161,10 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       episodes = episodesSelectorBySource(source)(useDetailStore.getState());
     }
 
-    // 标记正在切换源，期间的操作错误静默处理
-    const newChangeId = get()._sourceChangeId + 1;
-    set({ isLoading: true, retryCount: 0, _isTransitioning: true, _sourceChangeId: newChangeId });
+    set({ isLoading: true, retryCount: 0 });
     get()._stopStallDetection();
 
     const needsDetailInit = !detail || !episodes || episodes.length === 0 || detail.title !== title;
-
     logger.info(`[PERF] Detail check - needsInit: ${needsDetailInit}, hasDetail: ${!!detail}, episodesCount: ${episodes?.length || 0}`);
 
     if (needsDetailInit) {
@@ -201,8 +179,15 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       detail = useDetailStore.getState().detail;
 
       if (!detail) {
-        logger.error(`[ERROR] Detail not found after initialization for "${title}"`);
-        set({ isLoading: false, _isTransitioning: false });
+        logger.error(`[ERROR] Detail not found after initialization for "${title}" (source: ${source}, id: ${id})`);
+        const detailStoreState = useDetailStore.getState();
+        if (detailStoreState.error) {
+          logger.error(`[ERROR] DetailStore error: ${detailStoreState.error}`);
+          set({ isLoading: false });
+        } else {
+          logger.error(`[ERROR] DetailStore init completed but no detail found and no error reported`);
+          set({ isLoading: false });
+        }
         return;
       }
 
@@ -210,14 +195,18 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       episodes = episodesSelectorBySource(detail.source)(useDetailStore.getState());
 
       if (!episodes || episodes.length === 0) {
-        const sourceWithEpisodes = useDetailStore.getState().searchResults.find(r => r.episodes && r.episodes.length > 0);
+        logger.error(`[ERROR] No episodes found for "${title}" from source "${detail.source}" (${detail.source_name})`);
+        const detailStoreState = useDetailStore.getState();
+        logger.info(`[INFO] Available sources: ${detailStoreState.searchResults.map(r => `${r.source}(${r.episodes?.length || 0} eps)`).join(', ')}`);
+
+        const sourceWithEpisodes = detailStoreState.searchResults.find(r => r.episodes && r.episodes.length > 0);
         if (sourceWithEpisodes) {
           logger.info(`[FALLBACK] Using alternative source "${sourceWithEpisodes.source}" with ${sourceWithEpisodes.episodes.length} episodes`);
           episodes = sourceWithEpisodes.episodes;
           detail = sourceWithEpisodes;
         } else {
           logger.error(`[ERROR] No source with episodes found in searchResults`);
-          set({ isLoading: false, _isTransitioning: false });
+          set({ isLoading: false });
           return;
         }
       }
@@ -225,7 +214,6 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       logger.info(`[SUCCESS] Detail and episodes loaded - source: ${detail.source_name}, episodes: ${episodes.length}`);
     } else {
       logger.info(`[PERF] Skipping DetailStore.init - using cached data`);
-
       if (detail && detail.source && detail.source !== source) {
         logger.info(`[INFO] Cached detail source "${detail.source}" differs from provided source "${source}", updating episodes`);
         episodes = episodesSelectorBySource(detail.source)(useDetailStore.getState());
@@ -238,21 +226,28 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     if (!detail) {
       logger.error(`[ERROR] Final check failed: detail is null`);
-      set({ isLoading: false, _isTransitioning: false });
+      set({ isLoading: false });
       return;
     }
 
     if (!episodes || episodes.length === 0) {
       logger.error(`[ERROR] Final check failed: no episodes available for source "${detail.source}" (${detail.source_name})`);
-      set({ isLoading: false, _isTransitioning: false });
+      set({ isLoading: false });
       return;
     }
 
     logger.info(`[SUCCESS] Final validation passed - detail: ${detail.source_name}, episodes: ${episodes.length}`);
 
     try {
+      const storageStart = performance.now();
+
       const playRecord = await PlayRecordManager.get(detail!.source, detail!.id.toString());
+      const storagePlayRecordEnd = performance.now();
+      logger.info(`[PERF] PlayRecordManager.get took ${(storagePlayRecordEnd - storageStart).toFixed(2)}ms`);
+
       const playerSettings = await PlayerSettingsManager.get(detail!.source, detail!.id.toString());
+      const storageEnd = performance.now();
+      logger.info(`[PERF] PlayerSettingsManager.get took ${(storageEnd - storagePlayRecordEnd).toFixed(2)}ms`);
 
       const initialPositionFromRecord = playRecord?.play_time ? playRecord.play_time * 1000 : 0;
       const savedPlaybackRate = playerSettings?.playbackRate || 1.0;
@@ -262,14 +257,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         title: `第 ${index + 1} 集`,
       }));
 
-      // 核心逻辑：不调用stopAsync()！
-      // expo-av的VideoView.setSource()会在source prop变化时自动release旧player并创建新player
-      // 调用stopAsync()会在stop和source变化之间产生竞态：
-      // 1. stopAsync → positionMillis=0, shouldPlay=false
-      // 2. 状态回调触发，UI看到"不在播放"
-      // 3. source prop变化 → VideoView.setSource() → release旧player
-      // 在步骤1-3之间，其他操作（play/pause/seek）会操作一个已经stop的player，导致"操作失败"
-      // 正确做法：只需更新Zustand状态，让React重新渲染Video组件的source prop
+      // 先unload旧视频再设置新状态，避免黑屏
+      const { videoRef } = get();
+      try {
+        await videoRef?.current?.stopAsync();
+      } catch (_e) {
+        // 忽略stop失败
+      }
 
       set({
         isLoading: true,
@@ -284,32 +278,32 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       // 启动停滞检测
       get()._startStallDetection();
 
-      // 1秒后清除过渡标记（足够让VideoView.setSource完成）
-      const capturedChangeId = newChangeId;
-      setTimeout(() => {
-        if (get()._sourceChangeId === capturedChangeId) {
-          set({ _isTransitioning: false });
-        }
-      }, 1000);
-
       const perfEnd = performance.now();
       logger.info(`[PERF] PlayerStore.loadVideo COMPLETE - total time: ${(perfEnd - perfStart).toFixed(2)}ms`);
     } catch (error) {
       logger.debug("Failed to load play record", error);
-      set({ isLoading: false, _isTransitioning: false });
+      set({ isLoading: false });
+
+      const perfEnd = performance.now();
+      logger.info(`[PERF] PlayerStore.loadVideo ERROR - total time: ${(perfEnd - perfStart).toFixed(2)}ms`);
     }
   },
 
-  playEpisode: (index) => {
-    const { episodes } = get();
+  playEpisode: async (index) => {
+    const { episodes, videoRef } = get();
     if (index >= 0 && index < episodes.length) {
+      // 停止旧的停滞检测
       get()._stopStallDetection();
+      set({ retryCount: 0 });
 
-      const newChangeId = get()._sourceChangeId + 1;
+      // 先停止当前播放
+      try {
+        await videoRef?.current?.stopAsync();
+      } catch (_e) {
+        // 忽略
+      }
+
       set({
-        retryCount: 0,
-        _isTransitioning: true,
-        _sourceChangeId: newChangeId,
         isLoading: true,
         currentEpisodeIndex: index,
         showNextEpisodeOverlay: false,
@@ -318,25 +312,18 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         seekPosition: 0,
       });
 
+      // 关键修复：不再使用replayAsync()
+      // source prop变化会触发Video组件重新加载新的URL
+      // 只需确保状态更新后，Video组件的source已切换
       logger.info(`[EPISODE] Switching to episode ${index + 1}, URL: ${episodes[index].url.substring(0, 80)}...`);
 
       // 启动停滞检测
       get()._startStallDetection();
-
-      // 1秒后清除过渡标记
-      const capturedChangeId = newChangeId;
-      setTimeout(() => {
-        if (get()._sourceChangeId === capturedChangeId) {
-          set({ _isTransitioning: false });
-        }
-      }, 1000);
     }
   },
 
   togglePlayPause: async () => {
-    const { status, videoRef, _isTransitioning } = get();
-    // 源切换期间静默忽略，不弹"操作失败"
-    if (_isTransitioning) return;
+    const { status, videoRef } = get();
     if (status?.isLoaded) {
       try {
         if (status.isPlaying) {
@@ -345,29 +332,22 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           await videoRef?.current?.playAsync();
         }
       } catch (error) {
-        // 不在过渡期间才提示
-        if (!get()._isTransitioning) {
-          logger.debug("Failed to toggle play/pause:", error);
-          showToast("error", "操作失败");
-        }
+        logger.debug("Failed to toggle play/pause:", error);
+        Toast.show({ type: "error", text1: "操作失败" });
       }
     }
   },
 
   seek: async (duration) => {
-    const { status, videoRef, _isTransitioning } = get();
-    if (_isTransitioning) return;
+    const { status, videoRef } = get();
     if (!status?.isLoaded || !status.durationMillis) return;
 
     const newPosition = Math.max(0, Math.min(status.positionMillis + duration, status.durationMillis));
-
     try {
       await videoRef?.current?.setPositionAsync(newPosition);
     } catch (error) {
-      if (!get()._isTransitioning) {
-        logger.debug("Failed to seek video:", error);
-        showToast("error", "快进/快退失败");
-      }
+      logger.debug("Failed to seek video:", error);
+      Toast.show({ type: "error", text1: "快进/快退失败" });
     }
 
     set({
@@ -390,12 +370,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (existingIntroEndTime) {
       set({ introEndTime: undefined });
       get()._savePlayRecord({ introEndTime: undefined }, { immediate: true });
-      showToast("info", "已清除片头时间");
+      Toast.show({ type: "info", text1: "已清除片头时间" });
     } else {
       const newIntroEndTime = status.positionMillis;
       set({ introEndTime: newIntroEndTime });
       get()._savePlayRecord({ introEndTime: newIntroEndTime }, { immediate: true });
-      showToast("success", "设置成功", "片头时间已记录。");
+      Toast.show({ type: "success", text1: "设置成功", text2: "片头时间已记录。" });
     }
   },
 
@@ -407,13 +387,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (existingOutroStartTime) {
       set({ outroStartTime: undefined });
       get()._savePlayRecord({ outroStartTime: undefined }, { immediate: true });
-      showToast("info", "已清除片尾时间");
+      Toast.show({ type: "info", text1: "已清除片尾时间" });
     } else {
       if (!status.durationMillis) return;
       const newOutroStartTime = status.durationMillis - status.positionMillis;
       set({ outroStartTime: newOutroStartTime });
       get()._savePlayRecord({ outroStartTime: newOutroStartTime }, { immediate: true });
-      showToast("success", "设置成功", "片尾时间已记录。");
+      Toast.show({ type: "success", text1: "设置成功", text2: "片尾时间已记录。" });
     }
   },
 
@@ -431,7 +411,6 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     const { detail } = useDetailStore.getState();
     const { currentEpisodeIndex, episodes, status, introEndTime, outroStartTime } = get();
-
     if (detail && status?.isLoaded) {
       const existingRecord = {
         introEndTime,
@@ -461,23 +440,26 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
-    const { currentEpisodeIndex, episodes, outroStartTime, playEpisode, retryCount, _isTransitioning } = get();
+    const { currentEpisodeIndex, episodes, outroStartTime, playEpisode, retryCount } = get();
     const detail = useDetailStore.getState().detail;
 
+    // 更新位置追踪，用于停滞检测
     const currentPosition = newStatus.positionMillis || 0;
     const wasLoading = get().isLoading;
 
-    // 播放成功 → 清除过渡标记、加载状态
+    // 如果正在播放，清除加载状态并停止停滞检测
     if (newStatus.isPlaying) {
-      if (wasLoading || _isTransitioning) {
-        set({ isLoading: false, retryCount: 0, _isTransitioning: false });
+      if (wasLoading) {
+        set({ isLoading: false, retryCount: 0 });
         get()._stopStallDetection();
       }
       set({ lastPositionMillis: currentPosition });
     }
 
+    // 如果缓冲中且位置有变化，说明还在下载，更新位置但保持loading
     if (newStatus.isBuffering && currentPosition !== get().lastPositionMillis) {
       set({ lastPositionMillis: currentPosition });
+      // 位置在变但仍在缓冲，重启停滞检测
       get()._startStallDetection();
     }
 
@@ -527,6 +509,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     try {
       await videoRef?.current?.setRateAsync(rate, true);
       set({ playbackRate: rate });
+
       if (detail) {
         await PlayerSettingsManager.save(detail.source, detail.id.toString(), { playbackRate: rate });
       }
@@ -553,7 +536,6 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       outroStartTime: undefined,
       retryCount: 0,
       lastPositionMillis: 0,
-      _isTransitioning: false,
     });
   },
 
@@ -581,7 +563,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     if (!fallbackSource) {
       logger.error(`[VIDEO_ERROR] No fallback sources available for episode ${currentEpisodeIndex + 1}`);
-      showToast("error", "播放失败", "所有播放源都不可用，请稍后重试");
+      Toast.show({
+        type: "error",
+        text1: "播放失败",
+        text2: "所有播放源都不可用，请稍后重试"
+      });
       set({ isLoading: false });
       return;
     }
@@ -598,28 +584,26 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           title: `第 ${index + 1} 集`,
         }));
 
-        // 同loadVideo：不调用stopAsync()，让expo-av通过source prop变化自动处理
-        const newChangeId = get()._sourceChangeId + 1;
+        // 停止当前播放再切换
+        const { videoRef } = get();
+        try {
+          await videoRef?.current?.stopAsync();
+        } catch (_e) {
+          // 忽略
+        }
+
         set({
           episodes: mappedEpisodes,
           isLoading: true,
           retryCount: 0,
-          _isTransitioning: true,
-          _sourceChangeId: newChangeId,
         });
 
+        // 启动停滞检测
         get()._startStallDetection();
-
-        // 1秒后清除过渡标记
-        const capturedChangeId = newChangeId;
-        setTimeout(() => {
-          if (get()._sourceChangeId === capturedChangeId) {
-            set({ _isTransitioning: false });
-          }
-        }, 1000);
 
         const perfEnd = performance.now();
         logger.info(`[VIDEO_ERROR] Successfully switched to fallback source in ${(perfEnd - perfStart).toFixed(2)}ms`);
+        logger.info(`[VIDEO_ERROR] New episode URL: ${newEpisodes[currentEpisodeIndex].substring(0, 100)}...`);
 
         Toast.show({
           type: "success",
