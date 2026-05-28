@@ -20,7 +20,9 @@
       "Bash(sed -n '347,375p' app/index.tsx)",
       "Bash(npx tsc *)",
       "Bash(git show *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(./gradlew clean *)",
+      "Bash(yarn build *)"
     ],
     "deny": []
   }

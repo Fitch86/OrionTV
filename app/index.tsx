@@ -1,12 +1,12 @@
 import React, { useEffect, useCallback, useRef, useState } from "react";
-import { View, StyleSheet, ActivityIndicator, FlatList, Pressable, Animated, StatusBar, Platform, BackHandler, ToastAndroid } from "react-native";
+import { View, StyleSheet, ActivityIndicator, FlatList, Pressable, Animated, StatusBar, Platform, BackHandler, ToastAndroid, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { api } from "@/services/api";
 import VideoCard from "@/components/VideoCard";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Search, Settings, LogOut, Heart } from "lucide-react-native";
+import { Search, Settings, LogOut, Heart, Trash2 } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
 import useHomeStore, { RowItem, Category } from "@/stores/homeStore";
 import useAuthStore from "@/stores/authStore";
@@ -16,6 +16,7 @@ import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import { useApiConfig, getApiConfigErrorMessage } from "@/hooks/useApiConfig";
 import { Colors } from "@/constants/Colors";
+import { PlayRecordManager } from "@/services/storage";
 
 const LOAD_MORE_THRESHOLD = 200;
 
@@ -23,10 +24,11 @@ export default function HomeScreen() {
   const router = useRouter();
   const colorScheme = "dark";
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [deleteMode, setDeleteMode] = useState(false);
+  const deleteButtonRef = useRef<any>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();
 
-  // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
@@ -47,50 +49,56 @@ export default function HomeScreen() {
   const { isLoggedIn, logout } = useAuthStore();
   const apiConfigStatus = useApiConfig();
 
+  const isRecordCategory = selectedCategory?.type === "record";
+
   useFocusEffect(
     useCallback(() => {
       refreshPlayRecords();
     }, [refreshPlayRecords])
   );
 
-    // 双击返回退出逻辑（只限当前页面）
+  // 退出删除模式当离开最近播放分类
+  useEffect(() => {
+    if (!isRecordCategory) {
+      setDeleteMode(false);
+    }
+  }, [isRecordCategory]);
+
   const backPressTimeRef = useRef<number | null>(null);
 
   useFocusEffect(
     useCallback(() => {
-    const handleBackPress = () => {
-      const now = Date.now();
+      const handleBackPress = () => {
+        // 删除模式下按返回退出删除模式
+        if (deleteMode) {
+          setDeleteMode(false);
+          setTimeout(() => deleteButtonRef.current?.focus(), 100);
+          return true;
+        }
 
-      // 如果还没按过返回键，或距离上次超过2秒
-      if (!backPressTimeRef.current || now - backPressTimeRef.current > 2000) {
-        backPressTimeRef.current = now;
-        ToastAndroid.show("再按一次返回键退出", ToastAndroid.SHORT);
-        return true; // 拦截返回事件，不退出
-      }
-
-      // 两次返回键间隔小于2秒，退出应用
-      BackHandler.exitApp();
-      return true;
-    };
-
-    // 仅限 Android 平台启用此功能
-    if (Platform.OS === "android") {
-      const backHandler = BackHandler.addEventListener("hardwareBackPress", handleBackPress);
-
-      // 返回首页时重置状态
-      return () => {
-        backHandler.remove();
-        backPressTimeRef.current = null;
+        const now = Date.now();
+        if (!backPressTimeRef.current || now - backPressTimeRef.current > 2000) {
+          backPressTimeRef.current = now;
+          ToastAndroid.show("再按一次返回键退出", ToastAndroid.SHORT);
+          return true;
+        }
+        BackHandler.exitApp();
+        return true;
       };
-    }
-  }, [])
-);
 
-  // 统一的数据获取逻辑
+      if (Platform.OS === "android") {
+        const backHandler = BackHandler.addEventListener("hardwareBackPress", handleBackPress);
+        return () => {
+          backHandler.remove();
+          backPressTimeRef.current = null;
+        };
+      }
+    }, [deleteMode])
+  );
+
   useEffect(() => {
     if (!selectedCategory) return;
 
-    // 如果是容器分类且没有选择标签，设置默认标签
     if (selectedCategory.tags && !selectedCategory.tag) {
       const defaultTag = selectedCategory.tags[0];
       setSelectedTag(defaultTag);
@@ -98,14 +106,10 @@ export default function HomeScreen() {
       return;
     }
 
-    // 只有在API配置完成且分类有效时才获取数据
     if (apiConfigStatus.isConfigured && !apiConfigStatus.needsConfiguration) {
-      // 对于有标签的分类，需要确保有标签才获取数据
       if (selectedCategory.tags && selectedCategory.tag) {
         fetchInitialData();
-      }
-      // 对于无标签的分类，直接获取数据
-      else if (!selectedCategory.tags) {
+      } else if (!selectedCategory.tags) {
         fetchInitialData();
       }
     }
@@ -118,7 +122,6 @@ export default function HomeScreen() {
     selectCategory,
   ]);
 
-  // 清除错误状态的逻辑
   useEffect(() => {
     if (apiConfigStatus.needsConfiguration && error) {
       clearError();
@@ -150,6 +153,65 @@ export default function HomeScreen() {
     }
   };
 
+  // 删除单条记录 — 局部更新避免页面刷新导致焦点丢失
+  const handleDeleteRecord = useCallback(async (source: string, id: string, title: string) => {
+    Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
+      { text: "取消", style: "cancel" },
+      {
+        text: "删除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await PlayRecordManager.remove(source, id);
+            // 局部更新：从 contentData 中移除该项，避免全量刷新
+            const recordKey = `${source}+${id}`;
+            useHomeStore.setState(state => ({
+              contentData: state.contentData.filter(item =>
+                !(item.source === source && item.id === id)
+              ),
+            }));
+            const remaining = useHomeStore.getState().contentData;
+            if (remaining.length === 0) {
+              setDeleteMode(false);
+              await refreshPlayRecords();
+            }
+          } catch (error) {
+            Alert.alert("错误", "删除观看记录失败，请重试");
+          }
+        },
+      },
+    ]);
+  }, [refreshPlayRecords]);
+
+  // 全部删除
+  const handleDeleteAll = useCallback(() => {
+    Alert.alert("删除全部记录", "确定要删除所有观看记录吗？此操作不可恢复。", [
+      { text: "取消", style: "cancel" },
+      {
+        text: "全部删除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const records = await PlayRecordManager.getAll();
+            const keys = Object.keys(records);
+            for (const key of keys) {
+              const [source, id] = key.split("+");
+              await PlayRecordManager.remove(source, id);
+            }
+            setDeleteMode(false);
+            await refreshPlayRecords();
+          } catch (error) {
+            Alert.alert("错误", "删除全部记录失败，请重试");
+          }
+        },
+      },
+    ]);
+  }, [refreshPlayRecords]);
+
+  const toggleDeleteMode = useCallback(() => {
+    setDeleteMode(prev => !prev);
+  }, []);
+
   const renderCategory = ({ item }: { item: Category }) => {
     const isSelected = selectedCategory?.title === item.title;
     return (
@@ -163,7 +225,7 @@ export default function HomeScreen() {
     );
   };
 
-  const renderContentItem = ({ item }: { item: RowItem; index: number }) => (
+  const renderContentItem = ({ item, index }: { item: RowItem; index: number }) => (
     <VideoCard
       id={item.id}
       source={item.source}
@@ -177,7 +239,8 @@ export default function HomeScreen() {
       sourceName={item.sourceName}
       totalEpisodes={item.totalEpisodes}
       api={api}
-      onRecordDeleted={fetchInitialData}
+      deleteMode={deleteMode}
+      onDeleteRecord={handleDeleteRecord}
     />
   );
 
@@ -186,13 +249,10 @@ export default function HomeScreen() {
     return <ActivityIndicator style={{ marginVertical: 20 }} size="large" />;
   };
 
-  // 检查是否需要显示API配置提示
   const shouldShowApiConfig = apiConfigStatus.needsConfiguration && selectedCategory && !selectedCategory.tags;
 
-  // TV端和平板端的顶部导航
   const renderHeader = () => {
     if (deviceType === "mobile") {
-      // 移动端不显示顶部导航，使用底部Tab导航
       return null;
     }
 
@@ -200,7 +260,7 @@ export default function HomeScreen() {
       <View style={dynamicStyles.headerContainer}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <ThemedText style={dynamicStyles.headerTitle}>首页</ThemedText>
-          <Pressable android_ripple={Platform.isTV || deviceType !== 'tv'? { color: 'transparent' } : { color: Colors.dark.link }} style={{ marginLeft: 20 }} onPress={() => router.push("/live")}>
+          <Pressable android_ripple={Platform.isTV || deviceType !== 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }} style={{ marginLeft: 20 }} onPress={() => router.push("/live")}>
             {({ focused }) => (
               <ThemedText style={[dynamicStyles.headerTitle, { color: focused ? "white" : "grey" }]}>直播</ThemedText>
             )}
@@ -230,7 +290,38 @@ export default function HomeScreen() {
     );
   };
 
-  // 动态样式
+  // 最近播放分类的删除按钮栏
+  const renderDeleteBar = () => {
+    if (!isRecordCategory || loading || contentData.length === 0) return null;
+
+    return (
+      <View style={dynamicStyles.deleteBar}>
+        <StyledButton
+          ref={deleteButtonRef}
+          text={deleteMode ? "退出删除" : "删除"}
+          onPress={toggleDeleteMode}
+          isSelected={deleteMode}
+          variant={deleteMode ? "primary" : "default"}
+          style={dynamicStyles.deleteBarButton}
+          textStyle={dynamicStyles.deleteBarText}
+        >
+          <Trash2 color={deleteMode ? "#fff" : "#ccc"} size={16} />
+        </StyledButton>
+        {deleteMode && (
+          <StyledButton
+            text="全部删除"
+            onPress={handleDeleteAll}
+            style={dynamicStyles.deleteBarButton}
+            textStyle={dynamicStyles.deleteBarText}
+          />
+        )}
+        {deleteMode && (
+          <ThemedText style={dynamicStyles.deleteHint}>选择要删除的记录</ThemedText>
+        )}
+      </View>
+    );
+  };
+
   const dynamicStyles = StyleSheet.create({
     container: {
       flex: 1,
@@ -266,7 +357,7 @@ export default function HomeScreen() {
       paddingHorizontal: deviceType === "tv" ? spacing / 4 : spacing / 2,
       paddingVertical: spacing / 2,
       borderRadius: deviceType === "mobile" ? 6 : 8,
-      marginHorizontal: deviceType === "tv" ? spacing / 4 : spacing / 2, // TV端使用更小的间距
+      marginHorizontal: deviceType === "tv" ? spacing / 4 : spacing / 2,
     },
     categoryText: {
       fontSize: deviceType === "mobile" ? 14 : 16,
@@ -275,17 +366,33 @@ export default function HomeScreen() {
     contentContainer: {
       flex: 1,
     },
+    deleteBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: spacing,
+      paddingVertical: spacing / 4,
+    },
+    deleteBarButton: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 6,
+      marginRight: spacing / 2,
+    },
+    deleteBarText: {
+      fontSize: 14,
+    },
+    deleteHint: {
+      color: "#facc15",
+      fontSize: 13,
+      marginLeft: spacing / 2,
+    },
   });
 
   const content = (
     <ThemedView style={[commonStyles.container, dynamicStyles.container]}>
-      {/* 状态栏 */}
       {deviceType === "mobile" && <StatusBar barStyle="light-content" />}
-
-      {/* 顶部导航 */}
       {renderHeader()}
 
-      {/* 分类选择器 */}
       <View style={dynamicStyles.categoryContainer}>
         <FlatList
           data={categories}
@@ -323,6 +430,9 @@ export default function HomeScreen() {
           />
         </View>
       )}
+
+      {/* 删除操作栏 */}
+      {renderDeleteBar()}
 
       {/* 内容网格 */}
       {shouldShowApiConfig ? (
@@ -372,7 +482,6 @@ export default function HomeScreen() {
     </ThemedView>
   );
 
-  // 根据设备类型决定是否包装在响应式导航中
   if (deviceType === "tv") {
     return content;
   }

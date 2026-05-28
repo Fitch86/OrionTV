@@ -5,34 +5,12 @@ import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
-import useDetailStore, { SearchResultWithResolution } from "@/stores/detailStore";
+import useDetailStore, { SearchResultWithResolution, getSourceScore } from "@/stores/detailStore";
 import { FontAwesome } from "@expo/vector-icons";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
-
-// 源评分函数（同SourceSelectionModal）
-const getSourceScore = (item: SearchResultWithResolution): number => {
-  let score = 0;
-  const probe = item.probeResult;
-  if (probe?.accessible) {
-    score += 1000;
-    if (probe.pingMs < 200) score += 500;
-    else if (probe.pingMs < 500) score += 400;
-    else if (probe.pingMs < 1000) score += 300;
-    else if (probe.pingMs < 2000) score += 200;
-    else score += 100;
-  } else if (probe && !probe.accessible) {
-    score -= 500;
-  } else { score += 100; }
-  const res = item.resolution || '';
-  if (res.includes('1080')) score += 40;
-  else if (res.includes('720')) score += 30;
-  else if (res.includes('480')) score += 20;
-  else if (res.includes('360')) score += 10;
-  return score;
-};
 
 const getSpeedLabel = (item: SearchResultWithResolution) => {
   if (item.probeResult?.accessible) {

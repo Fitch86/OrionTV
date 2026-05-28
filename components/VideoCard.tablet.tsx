@@ -25,8 +25,9 @@ interface VideoCardTabletProps extends React.ComponentProps<typeof TouchableOpac
   episodeIndex?: number;
   totalEpisodes?: number;
   onFocus?: () => void;
-  onRecordDeleted?: () => void;
   api: API;
+  deleteMode?: boolean;
+  onDeleteRecord?: (source: string, id: string, title: string) => void;
 }
 
 const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
@@ -42,7 +43,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
       progress,
       episodeIndex,
       onFocus,
-      onRecordDeleted,
+      onDeleteRecord,
       api,
       playTime = 0,
     }: VideoCardTabletProps,
@@ -120,7 +121,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
           onPress: async () => {
             try {
               await PlayRecordManager.remove(source, id);
-              onRecordDeleted?.();
+              onDeleteRecord?.(source, id, title);
             } catch (error) {
               logger.info("Failed to delete play record:", error);
               Alert.alert("错误", "删除观看记录失败，请重试");

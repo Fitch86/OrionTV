@@ -9,6 +9,34 @@ const logger = Logger.withTag('DetailStore');
 
 export type SearchResultWithResolution = SearchResult & { resolution?: string | null; probeResult?: SourceProbeResult };
 
+export const getSourceScore = (item: SearchResultWithResolution): number => {
+  let score = 0;
+  const probe = item.probeResult;
+  if (probe?.accessible) {
+    score += 1000;
+    if (probe.pingMs < 200) score += 500;
+    else if (probe.pingMs < 500) score += 400;
+    else if (probe.pingMs < 1000) score += 300;
+    else if (probe.pingMs < 2000) score += 200;
+    else score += 100;
+  } else if (probe && !probe.accessible) {
+    score -= 500;
+  } else { score += 100; }
+  const res = item.resolution || '';
+  if (res.includes('1080')) score += 40;
+  else if (res.includes('720')) score += 30;
+  else if (res.includes('480')) score += 20;
+  else if (res.includes('360')) score += 10;
+  return score;
+};
+
+const getBestScoredResult = (results: SearchResultWithResolution[]): SearchResultWithResolution | null => {
+  if (results.length === 0) return null;
+  return results.reduce((best, current) =>
+    getSourceScore(current) > getSourceScore(best) ? current : best
+  , results[0]);
+};
+
 interface DetailState {
   q: string | null;
   searchResults: SearchResultWithResolution[];
@@ -106,7 +134,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
             source_name: r.source_name,
             resolution: r.resolution,
           })),
-          detail: state.detail ?? finalResults[0] ?? null,
+          detail: state.detail ?? getBestScoredResult(finalResults) ?? null,
         };
       });
     };
@@ -137,6 +165,14 @@ const useDetailStore = create<DetailState>((set, get) => ({
         if (preferredResult.length > 0) {
           logger.info(`[SUCCESS] Preferred source "${preferredSource}" found ${preferredResult.length} results for "${q}"`);
           await processAndSetResults(preferredResult, false);
+          // 强制使用保存的播放源，避免评分排序选了别的源导致产生重复播放记录
+          const currentDetail = get().detail;
+          if (currentDetail && currentDetail.source !== preferredSource) {
+            const preferredMatch = get().searchResults.find(r => r.source === preferredSource);
+            if (preferredMatch) {
+              set({ detail: preferredMatch });
+            }
+          }
           set({ loading: false });
         } else {
           // 降级策略：preferred source失败时立即尝试所有源

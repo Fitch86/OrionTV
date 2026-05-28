@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Animated, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
-import { PlayRecordManager } from "@/services/storage";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
@@ -19,13 +18,14 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   year?: string;
   rate?: string;
   sourceName?: string;
-  progress?: number; // 播放进度，0-1之间的小数
-  playTime?: number; // 播放时间 in ms
-  episodeIndex?: number; // 剧集索引
-  totalEpisodes?: number; // 总集数
+  progress?: number;
+  playTime?: number;
+  episodeIndex?: number;
+  totalEpisodes?: number;
   onFocus?: () => void;
-  onRecordDeleted?: () => void; // 添加回调属性
   api: API;
+  deleteMode?: boolean;
+  onDeleteRecord?: (source: string, id: string, title: string) => void;
 }
 
 const VideoCard = forwardRef<View, VideoCardProps>(
@@ -41,20 +41,17 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       progress,
       episodeIndex,
       onFocus,
-      onRecordDeleted,
       api,
       playTime = 0,
+      deleteMode,
+      onDeleteRecord,
     }: VideoCardProps,
     ref
   ) => {
     const router = useRouter();
     const [isFocused, setIsFocused] = useState(false);
     const [fadeAnim] = useState(new Animated.Value(0));
-
-    const longPressTriggered = useRef(false);
-
     const scale = useRef(new Animated.Value(1)).current;
-
     const deviceType = useResponsiveLayout().deviceType;
 
     const animatedStyle = {
@@ -62,11 +59,12 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     };
 
     const handlePress = () => {
-      if (longPressTriggered.current) {
-        longPressTriggered.current = false;
+      // 删除模式下按OK触发删除确认
+      if (deleteMode && onDeleteRecord) {
+        onDeleteRecord(source, id, title);
         return;
       }
-      // 如果有播放进度，直接转到播放页面
+
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
           pathname: "/play",
@@ -103,49 +101,11 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 400,
-        delay: Math.random() * 200, // 随机延迟创造交错效果
+        delay: Math.random() * 200,
         useNativeDriver: true,
       }).start();
     }, [fadeAnim]);
 
-    const handleLongPress = () => {
-      // Only allow long press for items with progress (play records)
-      if (progress === undefined) return;
-
-      longPressTriggered.current = true;
-
-      // Show confirmation dialog to delete play record
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Delete from local storage
-              await PlayRecordManager.remove(source, id);
-
-              // Call the onRecordDeleted callback
-              if (onRecordDeleted) {
-                onRecordDeleted();
-              }
-              // 如果没有回调函数，则使用导航刷新作为备选方案
-              else if (router.canGoBack()) {
-                router.replace("/");
-              }
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
-          },
-        },
-      ]);
-    };
-
-    // 是否是继续观看的视频
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
 
     return (
@@ -153,21 +113,18 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         <Pressable
           android_ripple={Platform.isTV || deviceType !== 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }}
           onPress={handlePress}
-          onLongPress={handleLongPress}
           onFocus={handleFocus}
           onBlur={handleBlur}
           style={({ pressed }) => [
             styles.pressable,
             {
-              zIndex: pressed ? 999 : 1, // 确保按下时有最高优先级
+              zIndex: pressed ? 999 : 1,
             },
           ]}
-          // activeOpacity={1}
-          delayLongPress={1000}
         >
-          <View style={styles.card}>
+          <View style={[styles.card, deleteMode && isFocused && styles.cardDeleteHighlight]}>
             <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
-            {isFocused && (
+            {isFocused && !deleteMode && (
               <View style={styles.overlay}>
                 {isContinueWatching && (
                   <View style={styles.continueWatchingBadge}>
@@ -175,6 +132,14 @@ const VideoCard = forwardRef<View, VideoCardProps>(
                     <ThemedText style={styles.continueWatchingText}>继续观看</ThemedText>
                   </View>
                 )}
+              </View>
+            )}
+            {/* 删除模式指示 */}
+            {deleteMode && isFocused && (
+              <View style={styles.overlay}>
+                <View style={styles.deleteBadge}>
+                  <ThemedText style={styles.deleteBadgeText}>按OK删除</ThemedText>
+                </View>
               </View>
             )}
 
@@ -244,6 +209,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#222",
     overflow: "hidden",
   },
+  cardDeleteHighlight: {
+    borderWidth: 2,
+    borderColor: '#ef4444',
+  },
   poster: {
     width: "100%",
     height: "100%",
@@ -256,21 +225,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
-  },
-  buttonRow: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    flexDirection: "row",
-    gap: 8,
-  },
-  iconButton: {
-    padding: 4,
-  },
-  favButton: {
-    position: "absolute",
-    top: 8,
-    left: 8,
   },
   ratingContainer: {
     position: "absolute",
@@ -300,12 +254,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     width: "100%",
-  },
-  title: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    textAlign: "center",
   },
   yearBadge: {
     position: "absolute",
@@ -359,5 +307,16 @@ const styles = StyleSheet.create({
   continueLabel: {
     color: Colors.dark.primary,
     fontSize: 12,
+  },
+  deleteBadge: {
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 5,
+  },
+  deleteBadgeText: {
+    color: "white",
+    fontSize: 13,
+    fontWeight: "bold",
   },
 });
