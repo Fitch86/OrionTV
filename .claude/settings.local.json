@@ -22,7 +22,9 @@
       "Bash(git show *)",
       "Read(//tmp/**)",
       "Bash(./gradlew clean *)",
-      "Bash(yarn build *)"
+      "Bash(yarn build *)",
+      "Bash(grep -v \"^[+-]$\")",
+      "Bash(EXPO_TV=1 npx expo prebuild --help)"
     ],
     "deny": []
   }

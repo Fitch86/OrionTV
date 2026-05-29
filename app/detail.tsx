@@ -66,6 +66,16 @@ export default function DetailScreen() {
     };
   }, [abort, init, q, source, id]);
 
+  // 测速完成后自动选最优源（仅新进入时，非从继续播放进入）
+  useEffect(() => {
+    if (allSourcesLoaded && !source && searchResults.length > 0 && detail) {
+      const bestResult = [...searchResults].sort((a, b) => getSourceScore(b) - getSourceScore(a))[0];
+      if (bestResult && bestResult.source !== detail.source) {
+        setDetail(bestResult);
+      }
+    }
+  }, [allSourcesLoaded, source]);
+
   const handlePlay = (episodeIndex: number) => {
     if (!detail) return;
     abort(); // Cancel any ongoing fetches

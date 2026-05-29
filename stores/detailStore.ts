@@ -37,6 +37,7 @@ const getBestScoredResult = (results: SearchResultWithResolution[]): SearchResul
   , results[0]);
 };
 
+
 interface DetailState {
   q: string | null;
   searchResults: SearchResultWithResolution[];
@@ -134,7 +135,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
             source_name: r.source_name,
             resolution: r.resolution,
           })),
-          detail: state.detail ?? getBestScoredResult(finalResults) ?? null,
+          detail: state.detail ?? finalResults[0] ?? null,
         };
       });
     };
@@ -165,14 +166,6 @@ const useDetailStore = create<DetailState>((set, get) => ({
         if (preferredResult.length > 0) {
           logger.info(`[SUCCESS] Preferred source "${preferredSource}" found ${preferredResult.length} results for "${q}"`);
           await processAndSetResults(preferredResult, false);
-          // 强制使用保存的播放源，避免评分排序选了别的源导致产生重复播放记录
-          const currentDetail = get().detail;
-          if (currentDetail && currentDetail.source !== preferredSource) {
-            const preferredMatch = get().searchResults.find(r => r.source === preferredSource);
-            if (preferredMatch) {
-              set({ detail: preferredMatch });
-            }
-          }
           set({ loading: false });
         } else {
           // 降级策略：preferred source失败时立即尝试所有源
