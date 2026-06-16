@@ -257,14 +257,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         title: `第 ${index + 1} 集`,
       }));
 
-      // 先unload旧视频再设置新状态，避免黑屏
-      const { videoRef } = get();
-      try {
-        await videoRef?.current?.stopAsync();
-      } catch (_e) {
-        // 忽略stop失败
-      }
-
+      // 直接设置新状态，source prop变化时Video组件自动释放旧ExoPlayer并创建新的
+      // 不调用stopAsync()，否则会创造竞态条件窗口导致"操作失败"
       set({
         isLoading: true,
         currentEpisodeIndex: episodeIndex,
@@ -290,19 +284,14 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playEpisode: async (index) => {
-    const { episodes, videoRef } = get();
+    const { episodes } = get();
     if (index >= 0 && index < episodes.length) {
       // 停止旧的停滞检测
       get()._stopStallDetection();
       set({ retryCount: 0 });
 
-      // 先停止当前播放
-      try {
-        await videoRef?.current?.stopAsync();
-      } catch (_e) {
-        // 忽略
-      }
-
+      // 直接设置新集数，source prop变化时Video组件自动释放旧ExoPlayer
+      // 不调用stopAsync()，否则会创造竞态条件窗口导致"操作失败"
       set({
         isLoading: true,
         currentEpisodeIndex: index,
@@ -323,7 +312,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   togglePlayPause: async () => {
-    const { status, videoRef } = get();
+    const { status, videoRef, isLoading } = get();
+    // 源切换进行中时忽略操作，避免竞态条件
+    if (isLoading) return;
     if (status?.isLoaded) {
       try {
         if (status.isPlaying) {
@@ -332,22 +323,22 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           await videoRef?.current?.playAsync();
         }
       } catch (error) {
-        logger.debug("Failed to toggle play/pause:", error);
-        Toast.show({ type: "error", text1: "操作失败" });
+        // 源切换期间操作失败是正常的，不显示错误提示
+        logger.debug("togglePlayPause caught error (likely source transition):", error);
       }
     }
   },
 
   seek: async (duration) => {
-    const { status, videoRef } = get();
-    if (!status?.isLoaded || !status.durationMillis) return;
+    const { status, videoRef, isLoading } = get();
+    if (!status?.isLoaded || !status.durationMillis || isLoading) return;
 
     const newPosition = Math.max(0, Math.min(status.positionMillis + duration, status.durationMillis));
     try {
       await videoRef?.current?.setPositionAsync(newPosition);
     } catch (error) {
-      logger.debug("Failed to seek video:", error);
-      Toast.show({ type: "error", text1: "快进/快退失败" });
+      logger.debug("seek caught error (likely source transition):", error);
+      return;
     }
 
     set({
@@ -584,14 +575,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           title: `第 ${index + 1} 集`,
         }));
 
-        // 停止当前播放再切换
-        const { videoRef } = get();
-        try {
-          await videoRef?.current?.stopAsync();
-        } catch (_e) {
-          // 忽略
-        }
-
+        // 直接设置新源，不调用stopAsync()
+        // source prop变化时Video组件自动释放旧ExoPlayer并创建新的
         set({
           episodes: mappedEpisodes,
           isLoading: true,

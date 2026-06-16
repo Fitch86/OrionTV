@@ -6,7 +6,7 @@ import { ThemedText } from "@/components/ThemedText";
 import { api } from "@/services/api";
 import VideoCard from "@/components/VideoCard";
 import { useFocusEffect, useRouter } from "expo-router";
-import { Search, Settings, LogOut, Heart, Trash2 } from "lucide-react-native";
+import { Search, Settings, LogOut, Heart } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
 import useHomeStore, { RowItem, Category } from "@/stores/homeStore";
 import useAuthStore from "@/stores/authStore";
@@ -258,13 +258,37 @@ export default function HomeScreen() {
 
     return (
       <View style={dynamicStyles.headerContainer}>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flex: 1 }}>
           <ThemedText style={dynamicStyles.headerTitle}>首页</ThemedText>
           <Pressable android_ripple={Platform.isTV || deviceType !== 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }} style={{ marginLeft: 20 }} onPress={() => router.push("/live")}>
             {({ focused }) => (
               <ThemedText style={[dynamicStyles.headerTitle, { color: focused ? "white" : "grey" }]}>直播</ThemedText>
             )}
           </Pressable>
+          {/* 最近播放时显示删除/全部删除按钮 — 放左侧方便TV焦点到达 */}
+          {isRecordCategory && !loading && contentData.length > 0 && (
+            <View style={{ flexDirection: "row", alignItems: "center", marginLeft: spacing }}>
+              {deleteMode && (
+                <StyledButton
+                  text="全部删除"
+                  onPress={handleDeleteAll}
+                  style={dynamicStyles.deleteHeaderButton}
+                  textStyle={dynamicStyles.deleteHeaderButtonText}
+                />
+              )}
+              <StyledButton
+                ref={deleteButtonRef}
+                text={deleteMode ? "退出删除" : "删除"}
+                onPress={toggleDeleteMode}
+                isSelected={deleteMode}
+                style={dynamicStyles.deleteHeaderButton}
+                textStyle={dynamicStyles.deleteHeaderButtonText}
+              />
+              {deleteMode && (
+                <ThemedText style={dynamicStyles.deleteHint}>选择要删除的记录</ThemedText>
+              )}
+            </View>
+          )}
         </View>
         <View style={dynamicStyles.rightHeaderButtons}>
           <StyledButton style={dynamicStyles.iconButton} onPress={() => router.push("/favorites")} variant="ghost">
@@ -286,38 +310,6 @@ export default function HomeScreen() {
             </StyledButton>
           )}
         </View>
-      </View>
-    );
-  };
-
-  // 最近播放分类的删除按钮栏
-  const renderDeleteBar = () => {
-    if (!isRecordCategory || loading || contentData.length === 0) return null;
-
-    return (
-      <View style={dynamicStyles.deleteBar}>
-        <StyledButton
-          ref={deleteButtonRef}
-          text={deleteMode ? "退出删除" : "删除"}
-          onPress={toggleDeleteMode}
-          isSelected={deleteMode}
-          variant={deleteMode ? "primary" : "default"}
-          style={dynamicStyles.deleteBarButton}
-          textStyle={dynamicStyles.deleteBarText}
-        >
-          <Trash2 color={deleteMode ? "#fff" : "#ccc"} size={16} />
-        </StyledButton>
-        {deleteMode && (
-          <StyledButton
-            text="全部删除"
-            onPress={handleDeleteAll}
-            style={dynamicStyles.deleteBarButton}
-            textStyle={dynamicStyles.deleteBarText}
-          />
-        )}
-        {deleteMode && (
-          <ThemedText style={dynamicStyles.deleteHint}>选择要删除的记录</ThemedText>
-        )}
       </View>
     );
   };
@@ -366,25 +358,19 @@ export default function HomeScreen() {
     contentContainer: {
       flex: 1,
     },
-    deleteBar: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingHorizontal: spacing,
-      paddingVertical: spacing / 4,
-    },
-    deleteBarButton: {
-      paddingHorizontal: 12,
-      paddingVertical: 6,
+    deleteHeaderButton: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
       borderRadius: 6,
       marginRight: spacing / 2,
     },
-    deleteBarText: {
+    deleteHeaderButtonText: {
       fontSize: 14,
     },
     deleteHint: {
       color: "#facc15",
       fontSize: 13,
-      marginLeft: spacing / 2,
+      marginLeft: spacing,
     },
   });
 
@@ -430,9 +416,6 @@ export default function HomeScreen() {
           />
         </View>
       )}
-
-      {/* 删除操作栏 */}
-      {renderDeleteBar()}
 
       {/* 内容网格 */}
       {shouldShowApiConfig ? (

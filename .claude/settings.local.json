@@ -24,7 +24,12 @@
       "Bash(./gradlew clean *)",
       "Bash(yarn build *)",
       "Bash(grep -v \"^[+-]$\")",
-      "Bash(EXPO_TV=1 npx expo prebuild --help)"
+      "Bash(EXPO_TV=1 npx expo prebuild --help)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(sed -i 's/\"1.0.4\"/\"1.0.5\"/g' /home/toy/example/OrionTV/package.json /home/toy/example/OrionTV/app.json)",
+      "Bash(sed -i 's/versionName \"1.0.4\"/versionName \"1.0.5\"/g' /home/toy/example/OrionTV/android/app/build.gradle)",
+      "Bash(sed -i 's/versionCode 2/versionCode 3/g' /home/toy/example/OrionTV/android/app/build.gradle)"
     ],
     "deny": []
   }
